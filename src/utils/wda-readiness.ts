@@ -52,7 +52,7 @@ export async function waitForWdaReady(
 
 /** Redact secrets and URL credentials, then retain only a bounded diagnostic tail. */
 export function sanitizeDiagnostic(value: string): string {
-  const withRedactedJson = redactEmbeddedJson(value);
+  const withRedactedJson = redactEscapedJson(redactEmbeddedJson(value));
   const withRedactedTextKeys = withRedactedJson.replace(
     /([\w.-]+)\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^,;\s}\]]+))/g,
     (match, key: string) => (isSensitiveKey(key) ? `${key}=[REDACTED]` : match),
@@ -60,6 +60,12 @@ export function sanitizeDiagnostic(value: string): string {
   return redactUrlCredentials(withRedactedTextKeys)
     .replace(/(?:\/Users\/|\/home\/)[^\s/:]+/g, '<user>')
     .slice(-WDA_LOG_TAIL_MAX_CHARS);
+}
+
+function redactEscapedJson(value: string): string {
+  return value.replace(/(\\"([^"\\\r\n]*)\\"\s*:\s*)\\"([^"\\\r\n]*)\\"/g, (match, prefix: string, key: string) =>
+    isSensitiveKey(key) ? `${prefix}\\"[REDACTED]\\"` : match,
+  );
 }
 
 function redactEmbeddedJson(value: string): string {
@@ -71,6 +77,14 @@ function redactEmbeddedJson(value: string): string {
   for (let index = 0; index < value.length; index++) {
     const character = value[index];
     if (start < 0) {
+      if (character === '{' && value[index + 1] === '\\') {
+        const end = value.indexOf('}', index + 2);
+        if (end >= 0) {
+          output += value.slice(index, end + 1);
+          index = end;
+          continue;
+        }
+      }
       if (character === '{' || character === '[') {
         start = index;
         depth = 1;

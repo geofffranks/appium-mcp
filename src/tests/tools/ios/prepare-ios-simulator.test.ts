@@ -55,6 +55,16 @@ describe('waitForWdaReady', () => {
     expect(diagnostic).toContain('"message":"password=ordinary-text"');
   });
 
+  test('redacts secrets in escaped JSON fragments without changing surrounding text', () => {
+    const diagnostic = sanitizeDiagnostic(
+      'before {\\"apiKey\\":\\"escaped-secret\\"} between {"api_key":"plain-json-secret"} after',
+    );
+
+    expect(diagnostic).toBe('before {\\"apiKey\\":\\"[REDACTED]\\"} between {"api_key":"[REDACTED]"} after');
+    expect(diagnostic).not.toContain('escaped-secret');
+    expect(diagnostic).not.toContain('plain-json-secret');
+  });
+
   test('bounds diagnostics after redaction', () => {
     expect(sanitizeDiagnostic('x'.repeat(5000)).length).toBeLessThanOrEqual(4000);
   });
