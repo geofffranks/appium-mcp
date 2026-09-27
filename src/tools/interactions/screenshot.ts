@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 
 import {fs, imageUtil} from '@appium/support';
@@ -5,10 +6,7 @@ import type {ContentResult, FastMCP} from 'fastmcp';
 import z from 'zod';
 
 import {getScreenshot} from '../../command.js';
-import {SCREENSHOT_VIEWER_URI} from '../../resources/screenshot-viewer.js';
 import {elementUUIDScheme} from '../../schema.js';
-import {clientSupportsMcpApps, isMcpAppsEnabled} from '../../ui/mcp-apps.js';
-import {createUIResource, createScreenshotViewerUI, addUIResourceToResponse} from '../../ui/mcp-ui-utils.js';
 import {resolveScreenshotDir} from '../../utils/paths.js';
 import {resolveDriver, textResult, errorResult, toolErrorMessage} from '../tool-response.js';
 
@@ -34,9 +32,8 @@ export async function executeScreenshot(opts: {
   maxWidth?: number;
   returnRawBase64?: boolean;
   sessionId?: string;
-  useMcpApps?: boolean;
 }): Promise<ContentResult> {
-  const {deps = defaultDeps, elementId, maxWidth, returnRawBase64, sessionId, useMcpApps = false} = opts;
+  const {deps = defaultDeps, elementId, maxWidth, returnRawBase64, sessionId} = opts;
 
   const resolved = await resolveDriver(sessionId);
   if (!resolved.ok) {
@@ -77,6 +74,13 @@ export async function executeScreenshot(opts: {
       };
     }
 
+    if (
+      screenshotBuffer.length < 8 ||
+      !screenshotBuffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw new Error('Captured screenshot is not a PNG image');
+    }
+
     // Generate filename with timestamp
     const timestamp = deps.dateNow();
     const filename = `screenshot_${timestamp}.png`;
@@ -90,31 +94,14 @@ export async function executeScreenshot(opts: {
     // Save screenshot to disk
     await deps.writeFile(filepath, screenshotBuffer);
 
-    const textResponse = textResult(`Screenshot saved successfully to: ${filepath}`);
-
-    // MCP Apps-capable clients receive the image through structuredContent.
-    // It remains available to the viewer without adding base64 data to model
-    // context or duplicating it inside generated HTML.
-    if (useMcpApps) {
-      return {
-        ...textResponse,
-        structuredContent: {
-          screenshot: {
-            data: displayBase64,
-            mimeType: 'image/png',
-            filepath,
-          },
-        },
-      };
-    }
-
-    // Add interactive screenshot viewer UI
-    return addUIResourceToResponse(textResponse, () =>
-      createUIResource(
-        `ui://appium-mcp/screenshot-viewer/${Date.now()}`,
-        createScreenshotViewerUI(displayBase64, filepath),
-      ),
+    const sha256 = createHash('sha256').update(screenshotBuffer).digest('hex');
+    const textResponse = textResult(
+      `Screenshot saved successfully. filepath=${filepath}; mimeType=image/png; width=${screenshotBuffer.readUInt32BE(16)}; height=${screenshotBuffer.readUInt32BE(20)}; bytes=${screenshotBuffer.length}; sha256=${sha256}`,
     );
+
+    // Saved-mode responses intentionally include only bounded metadata; image
+    // bytes are available at filepath and are never copied into response data.
+    return textResponse;
   } catch (err: unknown) {
     return errorResult(`Failed to take screenshot. err: ${toolErrorMessage(err)}`);
   }
@@ -134,11 +121,9 @@ const screenshotSchema = z.object({
 });
 
 export default function screenshot(server: FastMCP): void {
-  const mcpAppsEnabled = isMcpAppsEnabled();
   server.addTool({
     name: 'appium_screenshot',
     description: 'Take a screenshot and save as PNG. Optionally provide elementUUID to capture only that element.',
-    _meta: mcpAppsEnabled ? {ui: {resourceUri: SCREENSHOT_VIEWER_URI}} : undefined,
     parameters: screenshotSchema,
     annotations: {
       readOnlyHint: false,
@@ -146,14 +131,13 @@ export default function screenshot(server: FastMCP): void {
     },
     execute: async (
       args: z.infer<typeof screenshotSchema>,
-      context: Record<string, unknown> | undefined,
+      _context: Record<string, unknown> | undefined,
     ): Promise<ContentResult> =>
       executeScreenshot({
         elementId: args.elementUUID,
         maxWidth: args.maxWidth,
         returnRawBase64: args.returnRawBase64,
         sessionId: args.sessionId,
-        useMcpApps: mcpAppsEnabled && clientSupportsMcpApps(server, context),
       }),
   });
 }

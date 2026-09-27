@@ -6,14 +6,12 @@ const mockReadAllPersistedSessions = jest.fn(async (): Promise<any[]> => []);
 const mockRemovePersistedSession = jest.fn(async () => {});
 const mockAttachToRemoteSession = jest.fn(async (_opts: any): Promise<any> => ({}));
 const mockValidateRemoteServerUrl = jest.fn((_url: string, _regex?: string) => {});
-const mockGetScreenshot = jest.fn(async () => 'dGVzdA=='); // "test" base64
-const mockClientSupportsMcpApps = jest.fn(() => false);
-const mockIsMcpAppsEnabled = jest.fn(() => true);
-const mockCreateUIResource = jest.fn(() => ({}));
-const mockCreateScreenshotViewerUI = jest.fn((_base64: string, _filepath: string) => '');
-const mockAddUIResourceToResponse = jest.fn((response: any, factory: () => unknown) => ({
-  content: [...response.content, factory()],
-}));
+const pngBuffer = Buffer.alloc(24);
+pngBuffer.set([137, 80, 78, 71, 13, 10, 26, 10]);
+pngBuffer.writeUInt32BE(1, 16);
+pngBuffer.writeUInt32BE(1, 20);
+const pngBase64 = pngBuffer.toString('base64');
+const mockGetScreenshot = jest.fn(async () => pngBase64);
 
 jest.unstable_mockModule('../../../session-store.js', () => ({
   getDriver: mockGetDriver,
@@ -41,19 +39,7 @@ jest.unstable_mockModule('../../../logger.js', () => ({
   default: {debug: () => {}, info: () => {}, warn: () => {}, error: () => {}},
 }));
 
-jest.unstable_mockModule('../../../ui/mcp-apps.js', () => ({
-  MCP_APP_MIME_TYPE: 'text/html;profile=mcp-app',
-  clientSupportsMcpApps: mockClientSupportsMcpApps,
-  isMcpAppsEnabled: mockIsMcpAppsEnabled,
-}));
-
-jest.unstable_mockModule('../../../ui/mcp-ui-utils.js', () => ({
-  createUIResource: mockCreateUIResource,
-  createScreenshotViewerUI: mockCreateScreenshotViewerUI,
-  addUIResourceToResponse: mockAddUIResourceToResponse,
-}));
-
-const {executeScreenshot, default: registerScreenshot} = await import('../../../tools/interactions/screenshot.js');
+const {executeScreenshot} = await import('../../../tools/interactions/screenshot.js');
 
 function textFromResult(result: {
   content: Array<{type: string; text?: string}>;
@@ -73,14 +59,7 @@ describe('executeScreenshot resolveDriver', () => {
     mockAttachToRemoteSession.mockReset();
     mockValidateRemoteServerUrl.mockReset();
     mockGetScreenshot.mockReset();
-    mockGetScreenshot.mockResolvedValue('dGVzdA==');
-    mockClientSupportsMcpApps.mockReset();
-    mockClientSupportsMcpApps.mockReturnValue(false);
-    mockIsMcpAppsEnabled.mockReset();
-    mockIsMcpAppsEnabled.mockReturnValue(true);
-    mockCreateUIResource.mockClear();
-    mockCreateScreenshotViewerUI.mockClear();
-    mockAddUIResourceToResponse.mockClear();
+    mockGetScreenshot.mockResolvedValue(pngBase64);
   });
 
   test('takes a screenshot when an in-memory driver is available', async () => {
@@ -99,39 +78,66 @@ describe('executeScreenshot resolveDriver', () => {
     expect(mockGetScreenshot).toHaveBeenCalledTimes(1);
   });
 
-  test('keeps saved screenshot base64 out of model content for MCP Apps clients', async () => {
+  test('returns bounded hash metadata without including saved image bytes', async () => {
     mockGetDriver.mockReturnValue({} as any);
     const deps = screenshotDeps();
 
-    const result = await executeScreenshot({
-      deps,
-      useMcpApps: true,
-    });
+    const result = await executeScreenshot({deps});
+    const text = result.content[0].type === 'text' ? result.content[0].text : '';
+    const {createHash} = await import('node:crypto');
 
-    expect(result.content).toEqual([
-      {
-        type: 'text',
-        text: 'Screenshot saved successfully to: /screenshots/screenshot_123.png',
-      },
-    ]);
-    expect(result.structuredContent).toEqual({
-      screenshot: {
-        data: 'dGVzdA==',
-        mimeType: 'image/png',
-        filepath: '/screenshots/screenshot_123.png',
-      },
-    });
-    expect(mockAddUIResourceToResponse).not.toHaveBeenCalled();
-    expect(mockCreateScreenshotViewerUI).not.toHaveBeenCalled();
+    expect(text).toContain('filepath=/screenshots/screenshot_123.png');
+    expect(text).toContain('mimeType=image/png');
+    expect(text).toContain(`sha256=${createHash('sha256').update(pngBuffer).digest('hex')}`);
+    expect(JSON.stringify(result)).not.toContain(pngBase64);
+    expect(result.structuredContent).toBeUndefined();
   });
 
-  test('keeps the embedded screenshot viewer fallback for other clients', async () => {
+  test('hashes the actual PNG file written to disk', async () => {
+    const {mkdtemp, readFile, rm} = await import('node:fs/promises');
+    const {tmpdir} = await import('node:os');
+    const {createHash} = await import('node:crypto');
+    const directory = await mkdtemp(`${tmpdir()}/appium-screenshot-`);
     mockGetDriver.mockReturnValue({} as any);
+    const deps = screenshotDeps();
+    deps.resolveScreenshotDir = () => directory;
+    deps.writeFile = (async (filePath: string, data: Buffer) =>
+      await import('node:fs/promises').then(({writeFile}) => writeFile(filePath, data))) as any;
 
-    await executeScreenshot({deps: screenshotDeps()});
+    try {
+      const result = await executeScreenshot({deps});
+      const savedBytes = await readFile(`${directory}/screenshot_123.png`);
+      const text = result.content[0].type === 'text' ? result.content[0].text : '';
 
-    expect(mockAddUIResourceToResponse).toHaveBeenCalledTimes(1);
-    expect(mockCreateScreenshotViewerUI).toHaveBeenCalledWith('dGVzdA==', '/screenshots/screenshot_123.png');
+      expect(text).toContain(`sha256=${createHash('sha256').update(savedBytes).digest('hex')}`);
+      expect(savedBytes).toEqual(pngBuffer);
+    } finally {
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  test('does not write or return an image that is not PNG', async () => {
+    mockGetDriver.mockReturnValue({} as any);
+    mockGetScreenshot.mockResolvedValue(Buffer.from('not png').toString('base64'));
+    const deps = screenshotDeps();
+
+    const result = await executeScreenshot({deps});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].type === 'text' ? result.content[0].text : '').toContain('not a PNG');
+    expect(deps.writeFile).not.toHaveBeenCalled();
+  });
+
+  test('reports failed writes without returning screenshot bytes', async () => {
+    mockGetDriver.mockReturnValue({} as any);
+    const deps = screenshotDeps();
+    deps.writeFile.mockRejectedValue(new Error('Disk full'));
+
+    const result = await executeScreenshot({deps});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].type === 'text' ? result.content[0].text : '').toContain('Disk full');
+    expect(JSON.stringify(result)).not.toContain(pngBase64);
   });
 
   test('returns no-active-session error when nothing is available to rehydrate', async () => {
@@ -222,29 +228,6 @@ describe('executeScreenshot resolveDriver', () => {
   });
 });
 
-describe('appium_screenshot MCP Apps registration', () => {
-  beforeEach(() => {
-    mockClientSupportsMcpApps.mockReset();
-    mockClientSupportsMcpApps.mockReturnValue(false);
-    mockIsMcpAppsEnabled.mockReset();
-    mockIsMcpAppsEnabled.mockReturnValue(true);
-  });
-
-  test('advertises the static viewer when MCP Apps are enabled', () => {
-    const tool = registerTool();
-
-    expect(tool._meta).toEqual({
-      ui: {resourceUri: 'ui://appium-mcp/screenshot-viewer'},
-    });
-  });
-
-  test('omits static viewer metadata when MCP Apps are disabled', () => {
-    mockIsMcpAppsEnabled.mockReturnValue(false);
-
-    expect(registerTool()._meta).toBeUndefined();
-  });
-});
-
 function screenshotDeps() {
   return {
     writeFile: jest.fn(async () => {}),
@@ -252,18 +235,4 @@ function screenshotDeps() {
     resolveScreenshotDir: () => '/screenshots',
     dateNow: () => 123,
   };
-}
-
-function registerTool(): {
-  execute: (args: Record<string, unknown>, context?: Record<string, unknown>) => Promise<any>;
-  _meta?: unknown;
-} {
-  let definition: any;
-  registerScreenshot({
-    addTool(tool: any) {
-      definition = tool;
-    },
-    sessions: [],
-  } as any);
-  return definition;
 }

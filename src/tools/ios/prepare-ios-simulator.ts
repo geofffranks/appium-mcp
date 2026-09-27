@@ -15,6 +15,7 @@ import {IOSManager} from '../../devicemanager/ios-manager.js';
 import log from '../../logger.js';
 import {resolveAppiumMcpCachePath} from '../../utils/paths.js';
 import {findFreePort, releaseReservedPort} from '../../utils/ports.js';
+import {getWdaLogTail, waitForWdaReady, type WdaReadiness} from '../../utils/wda-readiness.js';
 import {textResult} from '../tool-response.js';
 
 type StepStatus = 'completed' | 'skipped' | 'failed';
@@ -145,23 +146,6 @@ async function terminateAppOnSimulator(bundleId: string, simulatorUdid: string):
 /** Loopback base URL a simulator's WDA is reachable at for a given local port. */
 function wdaBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
-}
-
-/** Poll WDA's /status until it responds or the attempt budget is exhausted. */
-async function waitForWdaReady(port: number): Promise<boolean> {
-  const url = `${wdaBaseUrl(port)}/status`;
-  for (let attempt = 0; attempt < 30; attempt++) {
-    try {
-      const res = await fetch(url, {signal: AbortSignal.timeout(2000)});
-      if (res.ok) {
-        return true;
-      }
-    } catch {
-      // Not up yet — retry.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  return false;
 }
 
 async function getAppBundleId(appPath: string): Promise<string> {
@@ -323,21 +307,24 @@ async function installWdaStep(result: PrepareResult, udid: string, wdaAppPath: s
     }
 
     const wdaPort = await findFreePort();
-    let ready = false;
+    let readiness: WdaReadiness = {ready: false, elapsedMs: 0, lastProbe: 'Launch did not complete'};
     try {
       log.info(`Launching WDA (${bundleId}) on port ${wdaPort}...`);
       await launchAppOnSimulator(bundleId, udid, wdaPort);
-      ready = await waitForWdaReady(wdaPort);
+      readiness = await waitForWdaReady(wdaPort);
     } finally {
       // Once WDA has bound the port the OS guards it; on failure it's free again.
       // Either way the reservation has served its purpose — release it.
       releaseReservedPort(wdaPort);
     }
 
-    if (!ready) {
+    if (!readiness.ready) {
+      const logTail = await getWdaLogTail(udid);
       result.wda_install = {
         status: 'failed',
-        detail: `WDA launched on port ${wdaPort} but did not become ready`,
+        detail:
+          `WDA readiness failed (UDID=${udid}, phase=readiness, elapsedMs=${readiness.elapsedMs}, ` +
+          `lastProbe=${readiness.lastProbe}). WDA log tail (bounded): ${logTail}`,
       };
       return;
     }
