@@ -2,6 +2,8 @@ import {performance} from 'node:perf_hooks';
 
 import {exec} from 'teen_process';
 
+import {isSensitiveKey, redactUrlCredentials} from './sensitive.js';
+
 const WDA_READY_TIMEOUT_MS = 30_000;
 const WDA_LOG_TAIL_MAX_CHARS = 4_000;
 const WDA_LOG_TAIL_MAX_LINES = 40;
@@ -48,11 +50,75 @@ export async function waitForWdaReady(
   return {ready: false, elapsedMs: Math.round(deps.now() - start), lastProbe};
 }
 
+/** Redact secrets and URL credentials, then retain only a bounded diagnostic tail. */
 export function sanitizeDiagnostic(value: string): string {
-  return value
+  const withRedactedJson = redactEmbeddedJson(value);
+  const withRedactedTextKeys = withRedactedJson.replace(
+    /([\w.-]+)\s*[:=]\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^,;\s}\]]+))/g,
+    (match, key: string) => (isSensitiveKey(key) ? `${key}=[REDACTED]` : match),
+  );
+  return redactUrlCredentials(withRedactedTextKeys)
     .replace(/(?:\/Users\/|\/home\/)[^\s/:]+/g, '<user>')
-    .replace(/((?:authorization|token|password|secret)(?:[=:]|\s+)\s*)(?:Bearer\s+)?\S+/gi, '$1<redacted>')
-    .slice(0, WDA_LOG_TAIL_MAX_CHARS);
+    .slice(-WDA_LOG_TAIL_MAX_CHARS);
+}
+
+function redactEmbeddedJson(value: string): string {
+  let output = '';
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (start < 0) {
+      if (character === '{' || character === '[') {
+        start = index;
+        depth = 1;
+      } else {
+        output += character;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === '{' || character === '[') {
+      depth++;
+    } else if (character === '}' || character === ']') {
+      depth--;
+    }
+    if (depth === 0) {
+      const candidate = value.slice(start, index + 1);
+      try {
+        output += JSON.stringify(redactJsonValue(JSON.parse(candidate)));
+      } catch {
+        output += candidate;
+      }
+      start = -1;
+    }
+  }
+  return output + (start < 0 ? '' : value.slice(start));
+}
+
+function redactJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactJsonValue);
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, isSensitiveKey(key) ? '[REDACTED]' : redactJsonValue(nested)]),
+    );
+  }
+  return typeof value === 'string' ? redactUrlCredentials(value) : value;
 }
 
 export async function getWdaLogTail(udid: string, run: typeof exec = exec): Promise<string> {
@@ -72,7 +138,7 @@ export async function getWdaLogTail(udid: string, run: typeof exec = exec): Prom
         '--predicate',
         'process CONTAINS[c] "WebDriverAgent"',
       ],
-      {timeout: 5000},
+      {timeout: 5000, maxStdoutBufferSize: WDA_LOG_TAIL_MAX_CHARS},
     );
     const lines = stdout.split(/\r?\n/).filter(Boolean).slice(-WDA_LOG_TAIL_MAX_LINES);
     return sanitizeDiagnostic(lines.join('\n').slice(-WDA_LOG_TAIL_MAX_CHARS)) || 'No matching WDA log entries';

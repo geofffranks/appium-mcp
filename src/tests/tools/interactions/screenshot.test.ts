@@ -1,5 +1,7 @@
 import {describe, test, expect, jest, beforeEach} from '@jest/globals';
 
+import {saveScreenshotFile} from '../../../utils/screenshot-file.js';
+
 const mockGetDriver = jest.fn((_sessionId?: string): any => null);
 const mockSetSession = jest.fn(async () => {});
 const mockReadAllPersistedSessions = jest.fn(async (): Promise<any[]> => []);
@@ -80,13 +82,18 @@ describe('executeScreenshot resolveDriver', () => {
 
   test('returns bounded hash metadata without including saved image bytes', async () => {
     mockGetDriver.mockReturnValue({} as any);
+    const {mkdtemp, rm} = await import('node:fs/promises');
+    const {tmpdir} = await import('node:os');
+    const directory = await mkdtemp(`${tmpdir()}/appium-screenshot-`);
     const deps = screenshotDeps();
+    deps.resolveScreenshotDir = () => directory;
 
     const result = await executeScreenshot({deps});
+    await rm(directory, {recursive: true, force: true});
     const text = result.content[0].type === 'text' ? result.content[0].text : '';
     const {createHash} = await import('node:crypto');
 
-    expect(text).toContain('filepath=/screenshots/screenshot_123.png');
+    expect(text).toContain(`filepath=${directory}/screenshot_123_`);
     expect(text).toContain('mimeType=image/png');
     expect(text).toContain(`sha256=${createHash('sha256').update(pngBuffer).digest('hex')}`);
     expect(JSON.stringify(result)).not.toContain(pngBase64);
@@ -101,12 +108,12 @@ describe('executeScreenshot resolveDriver', () => {
     mockGetDriver.mockReturnValue({} as any);
     const deps = screenshotDeps();
     deps.resolveScreenshotDir = () => directory;
-    deps.writeFile = (async (filePath: string, data: Buffer) =>
-      await import('node:fs/promises').then(({writeFile}) => writeFile(filePath, data))) as any;
 
     try {
       const result = await executeScreenshot({deps});
-      const savedBytes = await readFile(`${directory}/screenshot_123.png`);
+      const {readdir} = await import('node:fs/promises');
+      const [savedName] = await readdir(directory);
+      const savedBytes = await readFile(`${directory}/${savedName}`);
       const text = result.content[0].type === 'text' ? result.content[0].text : '';
 
       expect(text).toContain(`sha256=${createHash('sha256').update(savedBytes).digest('hex')}`);
@@ -125,13 +132,15 @@ describe('executeScreenshot resolveDriver', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].type === 'text' ? result.content[0].text : '').toContain('not a PNG');
-    expect(deps.writeFile).not.toHaveBeenCalled();
+    expect(result.isError).toBe(true);
   });
 
   test('reports failed writes without returning screenshot bytes', async () => {
     mockGetDriver.mockReturnValue({} as any);
     const deps = screenshotDeps();
-    deps.writeFile.mockRejectedValue(new Error('Disk full'));
+    deps.saveFile = jest.fn(async () => {
+      throw new Error('Disk full');
+    }) as any;
 
     const result = await executeScreenshot({deps});
 
@@ -234,5 +243,6 @@ function screenshotDeps() {
     mkdir: jest.fn(async () => {}),
     resolveScreenshotDir: () => '/screenshots',
     dateNow: () => 123,
+    saveFile: saveScreenshotFile,
   };
 }

@@ -1,6 +1,3 @@
-import {createHash} from 'node:crypto';
-import {join} from 'node:path';
-
 import {fs, imageUtil} from '@appium/support';
 import type {ContentResult, FastMCP} from 'fastmcp';
 import z from 'zod';
@@ -8,22 +5,23 @@ import z from 'zod';
 import {getScreenshot} from '../../command.js';
 import {elementUUIDScheme} from '../../schema.js';
 import {resolveScreenshotDir} from '../../utils/paths.js';
+import {saveScreenshotFile} from '../../utils/screenshot-file.js';
 import {resolveDriver, textResult, errorResult, toolErrorMessage} from '../tool-response.js';
 
 export {resolveScreenshotDir};
 
 export interface ScreenshotDeps {
-  writeFile: (filePath: string, data: Buffer) => Promise<unknown>;
   mkdir: (dirPath: string, options?: {recursive?: boolean}) => Promise<unknown>;
   resolveScreenshotDir: typeof resolveScreenshotDir;
   dateNow: () => number;
+  saveFile: typeof saveScreenshotFile;
 }
 
 const defaultDeps: ScreenshotDeps = {
-  writeFile: fs.writeFile,
   mkdir: async (dirPath) => await fs.mkdirp(dirPath),
   resolveScreenshotDir,
   dateNow: () => Date.now(),
+  saveFile: saveScreenshotFile,
 };
 
 export async function executeScreenshot(opts: {
@@ -83,18 +81,12 @@ export async function executeScreenshot(opts: {
 
     // Generate filename with timestamp
     const timestamp = deps.dateNow();
-    const filename = `screenshot_${timestamp}.png`;
     const screenshotDir = deps.resolveScreenshotDir();
 
     // Create a directory if it doesn't exist
     await deps.mkdir(screenshotDir, {recursive: true});
 
-    const filepath = join(screenshotDir, filename);
-
-    // Save screenshot to disk
-    await deps.writeFile(filepath, screenshotBuffer);
-
-    const sha256 = createHash('sha256').update(screenshotBuffer).digest('hex');
+    const {filepath, sha256} = await deps.saveFile(screenshotDir, timestamp, screenshotBuffer);
     const textResponse = textResult(
       `Screenshot saved successfully. filepath=${filepath}; mimeType=image/png; width=${screenshotBuffer.readUInt32BE(16)}; height=${screenshotBuffer.readUInt32BE(20)}; bytes=${screenshotBuffer.length}; sha256=${sha256}`,
     );

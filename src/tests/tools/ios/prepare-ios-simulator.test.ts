@@ -43,6 +43,21 @@ describe('waitForWdaReady', () => {
     expect(result.ready).toBe(false);
     expect(result.lastProbe).toContain('Request error: Error: socket crashed');
   });
+
+  test('redacts nested JSON secrets and credentialed URLs, including objects inside arrays', () => {
+    const diagnostic = sanitizeDiagnostic(
+      'response={"message":"password=ordinary-text","items":[{"api_key":"nested-value"},"safe"],"url":"https://user:pass@example.test"}',
+    );
+
+    expect(diagnostic).toContain('"api_key":"[REDACTED]"');
+    expect(diagnostic).not.toContain('nested-value');
+    expect(diagnostic).not.toContain('user:pass');
+    expect(diagnostic).toContain('"message":"password=ordinary-text"');
+  });
+
+  test('bounds diagnostics after redaction', () => {
+    expect(sanitizeDiagnostic('x'.repeat(5000)).length).toBeLessThanOrEqual(4000);
+  });
 });
 
 describe('getWdaLogTail', () => {
@@ -69,7 +84,7 @@ describe('getWdaLogTail', () => {
 describe('sanitizeDiagnostic', () => {
   test('redacts user paths and credential values and truncates output', () => {
     const sanitized = sanitizeDiagnostic(
-      `failed /Users/alice/private authorization=Bearer credential ${'x'.repeat(5000)}`,
+      `failed authorization=Bearer credential ${'x'.repeat(5000)} /Users/alice/private`,
     );
 
     expect(sanitized).toContain('<user>');

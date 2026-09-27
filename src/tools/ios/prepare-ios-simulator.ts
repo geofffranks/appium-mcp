@@ -15,7 +15,7 @@ import {IOSManager} from '../../devicemanager/ios-manager.js';
 import log from '../../logger.js';
 import {resolveAppiumMcpCachePath} from '../../utils/paths.js';
 import {findFreePort, releaseReservedPort} from '../../utils/ports.js';
-import {getWdaLogTail, waitForWdaReady, type WdaReadiness} from '../../utils/wda-readiness.js';
+import {getWdaLogTail, sanitizeDiagnostic, waitForWdaReady, type WdaReadiness} from '../../utils/wda-readiness.js';
 import {textResult} from '../tool-response.js';
 
 type StepStatus = 'completed' | 'skipped' | 'failed';
@@ -339,7 +339,7 @@ async function installWdaStep(result: PrepareResult, udid: string, wdaAppPath: s
     };
     result.ready = true;
   } catch (error: any) {
-    result.wda_install = {status: 'failed', detail: error.message};
+    result.wda_install = {status: 'failed', detail: sanitizeDiagnostic(String(error))};
   }
 }
 
@@ -388,7 +388,7 @@ async function prepareSimulator(
       };
     }
   } catch (error: any) {
-    result.boot = {status: 'failed', detail: error.message};
+    result.boot = {status: 'failed', detail: sanitizeDiagnostic(String(error))};
     return result;
   }
 
@@ -423,7 +423,7 @@ async function prepareSimulator(
       };
     }
   } catch (error: any) {
-    result.wda_download = {status: 'failed', detail: error.message};
+    result.wda_download = {status: 'failed', detail: sanitizeDiagnostic(String(error))};
     result.wda_install = {
       status: 'skipped',
       detail: 'WDA download failed',
@@ -458,6 +458,7 @@ export default function prepareIosSimulator(server: FastMCP): void {
     description:
       'Boot an iOS/tvOS simulator, download/cache WDA, and launch it on a free per-simulator port. ' +
       'Pass capabilitiesHint (appium:webDriverAgentUrl) to appium_session_management action=create to reuse WDA. ' +
+      'A later preparation of the same simulator replaces the running WDA and invalidates its previous URL hint; use the newest successful result. ' +
       'skipWda=true only boots. APPIUM_MCP_WDA_APP_PATH can point to an extracted WebDriverAgentRunner-Runner.app (absolute path) to skip download.',
     parameters: prepareIosSimulatorSchema,
     annotations: {
