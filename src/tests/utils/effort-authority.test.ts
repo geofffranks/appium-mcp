@@ -4,7 +4,7 @@ import {join} from 'node:path';
 
 import {afterEach, beforeEach, describe, expect, test} from '@jest/globals';
 
-import {callEffortAuthority} from '../../utils/effort-authority.js';
+import {callEffortAuthority, siblingEffortExecutable} from '../../utils/effort-authority.js';
 
 let directory: string;
 let originalExecutable: string | undefined;
@@ -40,6 +40,12 @@ async function createCli(contents: string): Promise<string> {
 }
 
 describe('effort authority CLI adapter', () => {
+  test('repository fallback is relative to installed module, not caller cwd', () => {
+    expect(siblingEffortExecutable('file:///workspace/appium-mcp/dist/utils/effort-authority.js'))
+      .toBe('/workspace/ios-app-dev-mcp/bin/ios-app-dev-mcp');
+    expect(siblingEffortExecutable('file:///workspace/appium-mcp/src/utils/effort-authority.ts'))
+      .toBe('/workspace/ios-app-dev-mcp/bin/ios-app-dev-mcp');
+  });
   test('sends one strict JSON request on stdin without placing token in argv or env', async () => {
     await createCli(`
       let input = '';
