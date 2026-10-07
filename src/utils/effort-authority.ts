@@ -168,6 +168,14 @@ async function resolveEffortExecutable(): Promise<string> {
     }
     return configured;
   }
+  // Prefer the co-installed repository binary over a potentially stale PATH copy.
+  const sibling = siblingEffortExecutable(import.meta.url);
+  try {
+    await access(sibling, constants.X_OK);
+    return await realpath(sibling);
+  } catch {
+    // Other installation layouts may provide the authority through PATH.
+  }
   try {
     const {stdout} = await execFileAsync('which', ['ios-app-dev-mcp'], {
       encoding: 'utf8',
@@ -181,15 +189,6 @@ async function resolveEffortExecutable(): Promise<string> {
     }
   } catch {
     // The configured binary may be discoverable only through the explicit override.
-  }
-  // Repository installations keep the two MCP checkouts beside each other.
-  // Resolve from this module, never the caller worktree or process cwd.
-  const sibling = siblingEffortExecutable(import.meta.url);
-  try {
-    await access(sibling, constants.X_OK);
-    return await realpath(sibling);
-  } catch {
-    // Other installation layouts require the explicit override or PATH.
   }
   throw new Error(
     'Effort authority executable was not found. Set APPIUM_MCP_EFFORT_CLI_PATH or add ios-app-dev-mcp to PATH.',
