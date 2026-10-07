@@ -333,7 +333,11 @@ async function handleIOSDeviceSelection(
     return formatIOSSelectionResponse(selected.device.info.name, deviceUdid);
   }
 
-  // Auto-select when only one device is available
+  // Simulator discovery never changes the global default; managed callers assign an explicit UDID.
+  if (iosDeviceType === 'simulator') {
+    return formatIOSListResponse(devices, iosDeviceType);
+  }
+  // Preserve physical-device selection behavior.
   if (devices.length === 1) {
     const selected = selectIOSDevice(devices[0].udid, devices, iosDeviceType);
     if (!selected.ok) {

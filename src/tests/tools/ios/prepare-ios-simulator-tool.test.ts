@@ -8,7 +8,8 @@ const mockWaitForWdaReady = jest.fn(async () => ({
   lastProbe: 'Request error: Error: token=[REDACTED]',
 }));
 const mockGetWdaLogTail = jest.fn(async () => 'WDA log authorization=[REDACTED]');
-const mockExec = jest.fn(async () => ({stdout: ''}));
+const mockExec = jest.fn(async (_command: string, args: string[]) => ({stdout: args.includes('listapps') ? '{}' : ''}));
+jest.unstable_mockModule('../../../utils/effort-authority.js', () => ({callEffortAuthority: async () => ({ok: true, status: 'updated'})}));
 const mockAddTool = jest.fn();
 const mockIOSManager = {
   getInstance: () => ({listSimulators: async () => [{udid: 'test-udid', name: 'iPhone', state: 'Booted'}]}),
@@ -49,7 +50,7 @@ describe('prepare_ios_simulator tool failure composition', () => {
     Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
     let result: any;
     try {
-      result = await definition.execute({udid: 'test-udid', platform: 'ios'});
+      result = await definition.execute({udid: 'test-udid', platform: 'ios', effortToken: 'test-owner', operationId: 'prepare', worktree: process.cwd()});
     } finally {
       if (platformDescriptor) {
         Object.defineProperty(process, 'platform', platformDescriptor);

@@ -13,8 +13,16 @@
  * See src/tools/metadata/README.md for YAML metadata approach.
  */
 import type {ContentResult, FastMCP} from 'fastmcp';
+import {z} from 'zod';
 
 import log from '../logger.js';
+import {getSessionInfo} from '../session-store.js';
+import {
+  admissionResult,
+  isLocalSimulatorSession,
+  managedContextFromArgs,
+  withManagedToolAdmission,
+} from '../utils/managed-tool-guard.js';
 import {redactForLogging, redactUrlCredentials} from '../utils/sensitive.js';
 import ai from './ai/ai.js';
 import {isAIEnabled, assertAIConfig} from './ai/config.js';
@@ -38,6 +46,7 @@ import screenRecording from './interactions/screen-recording.js';
 import screenshot from './interactions/screenshot.js';
 import setValue from './interactions/set-value.js';
 import getWindowSize from './interactions/window-size.js';
+import cleanupIosSimulator from './ios/cleanup-ios-simulator.js';
 import prepareIosRealDevice from './ios/prepare-ios-real-device.js';
 import prepareIosSimulator from './ios/prepare-ios-simulator.js';
 import mobileDeviceControl from './session/device-control.js';
@@ -61,12 +70,142 @@ export default function registerTools(server: FastMCP): void {
     if (typeof originalExecute !== 'function') {
       return originalAddTool(toolDef);
     }
+    const guarded = toolName !== 'appium_prepare_ios_real_device';
+    const parameters =
+      guarded && toolDef.parameters instanceof z.ZodObject
+        ? toolDef.parameters.safeExtend({
+            effortToken: z.string().optional().describe('Effort credential for managed local simulator operations.'),
+            worktree: z.string().optional().describe('Canonical absolute host worktree bound to the effort.'),
+            operationId: z.string().optional().describe('Stable operation identifier for reconciliation.'),
+            sessionId: z
+              .string()
+              .optional()
+              .describe('Explicit Appium session identifier; required for managed local simulator operations.'),
+          })
+        : toolDef.parameters;
     return originalAddTool({
       ...toolDef,
+      parameters,
       execute: async (args, context) => {
         const start = Date.now();
         log.info(`[TOOL START] ${toolName}`, redactForLogging(args));
         try {
+          if (guarded && isManagedMutation(toolName, args)) {
+            const explicit = managedContextFromArgs(args);
+            const values = args as Record<string, unknown>;
+            const action = values.action;
+            const setup =
+              toolName === 'prepare_ios_simulator' ||
+              toolName === 'cleanup_ios_simulator' ||
+              toolName === 'select_device' ||
+              (toolName === 'appium_session_management' && (action === 'create' || action === 'attach'));
+            if (setup) {
+              // Discovery does not admit work or change the selected-device default.
+              if (toolName === 'select_device' && !values.deviceUdid) {
+                return originalExecute(args, context);
+              }
+              let capabilities: Record<string, unknown> = {};
+              if (typeof values.capabilities === 'string') {
+                try {
+                  capabilities = JSON.parse(values.capabilities) as Record<string, unknown>;
+                } catch {
+                  return admissionResult({
+                    ok: false,
+                    status: 'denied',
+                    message: 'Invalid capabilities; nothing started.',
+                  });
+                }
+              }
+              if (typeof values.remoteServerUrl === 'string') {
+                const remoteInfo = {
+                  metadata: {platform: String(values.platform ?? capabilities.platformName ?? 'ios'), capabilities},
+                  remoteServerUrl: values.remoteServerUrl,
+                };
+                if (isLocalSimulatorSession(remoteInfo)) {
+                  return admissionResult({
+                    ok: false,
+                    status: 'denied',
+                    message:
+                      'Unknown local/loopback Appium attachment is not supported by managed admission; nothing started.',
+                  });
+                }
+              } else {
+                const platform = String(values.platform ?? 'ios');
+                const localIOS =
+                  toolName === 'prepare_ios_simulator' ||
+                  (/ios|tvos/i.test(platform) && values.iosDeviceType !== 'real');
+                if (localIOS) {
+                  const assigned =
+                    explicit?.udid ??
+                    (typeof values.deviceUdid === 'string' ? values.deviceUdid : undefined) ??
+                    (typeof capabilities['appium:udid'] === 'string' ? capabilities['appium:udid'] : undefined);
+                  const admitted = await withManagedToolAdmission(
+                    {...explicit, udid: assigned},
+                    toolOperation(toolName),
+                    () => originalExecute(args, context),
+                  );
+                  if (!admitted.admitted) {
+                    return admissionResult(admitted.response ?? {ok: false, status: 'denied'});
+                  }
+                  return admitted.result;
+                }
+              }
+            }
+            const explicitSessionId = explicit?.sessionId;
+            const session = getSessionInfo(explicitSessionId);
+            const local = isLocalSimulatorSession(session);
+            const defaultLocal = !explicitSessionId && isLocalSimulatorSession(getSessionInfo());
+            if (defaultLocal) {
+              return admissionResult({
+                ok: false,
+                status: 'denied',
+                message:
+                  'Local simulator calls must specify sessionId; the active-session default is disabled for managed simulators.',
+              });
+            }
+            if (local) {
+              if (!explicit) {
+                return admissionResult({
+                  ok: false,
+                  status: 'denied',
+                  message: 'Managed simulator calls require explicit effortToken, worktree, and sessionId.',
+                });
+              }
+              if (
+                !session?.effortToken ||
+                explicit.effortToken !== session.effortToken ||
+                explicit.worktree !== session.worktree
+              ) {
+                return admissionResult({
+                  ok: false,
+                  status: 'denied',
+                  message: 'Session is not bound to this effort/worktree; nothing started.',
+                });
+              }
+              const contextWithDevice = {...explicit, udid: session.udid};
+              if (!contextWithDevice.udid) {
+                return admissionResult({
+                  ok: false,
+                  status: 'denied',
+                  message: 'Managed simulator call requires an explicit simulator UDID.',
+                });
+              }
+              const admitted = await withManagedToolAdmission(contextWithDevice, toolOperation(toolName), () =>
+                originalExecute(args, context),
+              );
+              if (!admitted.admitted) {
+                return admissionResult(admitted.response ?? {ok: false, status: 'denied'});
+              }
+              return admitted.result;
+            }
+            if (explicit?.sessionId && !session && !setup) {
+              return admissionResult({
+                ok: false,
+                status: 'denied',
+                message: 'Unknown iOS session target; local simulator status cannot be established safely.',
+              });
+            }
+          }
           const result = await originalExecute(args, context);
           const durationMs = Date.now() - start;
           log.info(
@@ -107,6 +246,7 @@ export default function registerTools(server: FastMCP): void {
 
   // iOS Setup
   prepareIosSimulator(server);
+  cleanupIosSimulator(server);
   prepareIosRealDevice(server);
 
   // Gestures (touch input)
@@ -155,6 +295,30 @@ export default function registerTools(server: FastMCP): void {
   }
 
   log.info('All tools registered');
+}
+
+function isManagedMutation(toolName: string, args: unknown): boolean {
+  if (
+    [
+      'appium_get_active_element',
+      'appium_get_page_source',
+      'appium_get_text',
+      'appium_get_element_attribute',
+      'appium_screenshot',
+      'appium_get_window_size',
+    ].includes(toolName)
+  ) {
+    return true;
+  }
+  if (toolName === 'appium_session_management') {
+    const action = (args as {action?: string} | null)?.action;
+    return action !== 'list';
+  }
+  return true;
+}
+
+function toolOperation(toolName: string): string {
+  return toolName.includes('prepare') || toolName.includes('select_device') ? 'device' : 'appium';
 }
 
 function sessionIdFromToolArgs(args: unknown): string | undefined {

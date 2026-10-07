@@ -68,6 +68,8 @@ jest.unstable_mockModule('../../../session-store', () => ({
   listPersistedSessions: jest.fn(() => []),
   removePersistedSession: jest.fn(),
   setSession: jest.fn(),
+  bindManagedSession: jest.fn(),
+  getSessionInfo: jest.fn(),
   getDriver: jest.fn(),
   getSessionOwnership: jest.fn(),
   getSessionId: jest.fn(),

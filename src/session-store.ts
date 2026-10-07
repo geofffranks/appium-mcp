@@ -19,6 +19,54 @@ export interface SessionInfo {
   ownership: SessionOwnership;
   metadata: SessionMetadata;
   remoteServerUrl?: string;
+  /** Opaque owner credential; never returned by listSessions or logged. */
+  effortToken?: string;
+  worktree?: string;
+  operationId?: string;
+  inventoryEndpoint?: string;
+  udid?: string;
+}
+
+export interface ManagedSessionBinding {
+  effortToken: string;
+  worktree: string;
+  operationId: string;
+  udid: string;
+  inventoryEndpoint: string;
+}
+
+const pendingManagedSessions = new Map<string, ManagedSessionBinding>();
+
+/** Retain in-process binding details; durable intent is recorded by the authority separately. */
+export function beginManagedSession(intentId: string, binding: ManagedSessionBinding): void {
+  if (
+    !intentId ||
+    !binding.effortToken ||
+    !binding.worktree ||
+    !binding.operationId ||
+    !binding.udid ||
+    !binding.inventoryEndpoint
+  ) {
+    throw new Error('Managed simulator session ownership details are incomplete.');
+  }
+  pendingManagedSessions.set(intentId, binding);
+}
+
+/** Promote the pre-creation intent only after Appium returns its real ID. */
+export function getPendingManagedSession(intentId: string): ManagedSessionBinding | undefined {
+  return pendingManagedSessions.get(intentId);
+}
+
+export function clearPendingManagedSession(intentId: string): void {
+  pendingManagedSessions.delete(intentId);
+}
+
+export function bindManagedSession(sessionId: string, binding: ManagedSessionBinding): void {
+  const session = sessions.get(sessionId);
+  if (!session || session.ownership !== 'owned' || session.remoteServerUrl) {
+    throw new Error('Only an owned embedded session can receive a managed simulator binding.');
+  }
+  Object.assign(session, binding);
 }
 
 interface SessionMetadata {

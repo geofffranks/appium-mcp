@@ -10,6 +10,7 @@ import {IOSManager} from '../../devicemanager/ios-manager.js';
 import log from '../../logger.js';
 import {setSession, listSessions} from '../../session-store.js';
 import {createUIResource, createSessionDashboardUI, addUIResourceToResponse} from '../../ui/mcp-ui-utils.js';
+import {recordSessionIntent, recordCreatedSession, type ManagedSessionArgs} from '../../utils/managed-session.js';
 import {findFreePort, releaseReservedPorts} from '../../utils/ports.js';
 import {redactForLogging, redactUrlCredentials} from '../../utils/sensitive.js';
 import {getPortFromUrl, validateRemoteServerUrl} from '../../utils/url.js';
@@ -293,17 +294,19 @@ export function validateLocalCreatePlatformMatch(
  *
  * Returns a tool-execution error result (isError: true) on failure.
  */
-export async function createSessionAction(args: {
-  platform: (typeof DRIVER_MODE_PLATFORMS)[number];
-  capabilities?: Record<string, any>;
-  remoteServerUrl?: string;
-}): Promise<ContentResult> {
+export async function createSessionAction(
+  args: {
+    platform: (typeof DRIVER_MODE_PLATFORMS)[number];
+    capabilities?: Record<string, any>;
+    remoteServerUrl?: string;
+  } & ManagedSessionArgs,
+): Promise<ContentResult> {
   let finalCapabilities: Capabilities | undefined;
 
   try {
     const {platform, capabilities: customCapabilities, remoteServerUrl} = args;
 
-    const platformMismatch = validateLocalCreatePlatformMatch(platform, remoteServerUrl);
+    const platformMismatch = args.effortToken ? undefined : validateLocalCreatePlatformMatch(platform, remoteServerUrl);
     if (platformMismatch) {
       return platformMismatch;
     }
@@ -312,7 +315,9 @@ export async function createSessionAction(args: {
     if (platform === 'android') {
       finalCapabilities = buildAndroidCapabilities(configCapabilities.android, customCapabilities, !!remoteServerUrl);
     } else if (platform === 'ios') {
-      finalCapabilities = await buildIOSCapabilities(configCapabilities.ios, customCapabilities, !!remoteServerUrl);
+      finalCapabilities = args.effortToken && !remoteServerUrl
+        ? {platformName: 'iOS', 'appium:automationName': 'XCUITest', ...configCapabilities.ios, ...customCapabilities}
+        : await buildIOSCapabilities(configCapabilities.ios, customCapabilities, !!remoteServerUrl);
     } else {
       finalCapabilities = {
         ...configCapabilities.general,
@@ -358,6 +363,12 @@ export async function createSessionAction(args: {
       if (platform === 'general') {
         return errorResult('platform=general requires remoteServerUrl.');
       }
+      const managed = args.effortToken ? await recordSessionIntent(args, finalCapabilities) : undefined;
+      if (managed) {
+        finalCapabilities['appium:usePrebuiltWDA'] = true;
+        finalCapabilities['appium:useNewWDA'] = false;
+        finalCapabilities['appium:noReset'] = true;
+      }
       const allocation = await assignEmbeddedDriverPorts(platform, finalCapabilities);
       finalCapabilities = allocation.capabilities;
       const driver = createDriverForPlatform(platform);
@@ -371,6 +382,12 @@ export async function createSessionAction(args: {
         releaseReservedPorts(allocation.allocatedPorts);
       }
       await setSession(driver, sessionId, finalCapabilities, 'owned');
+      if (managed) {
+        if (typeof sessionId !== 'string' || !sessionId) {
+          throw new Error('Managed driver returned no real session ID; preserve ownership and reconcile.');
+        }
+        await recordCreatedSession(sessionId, managed);
+      }
     }
 
     const sessionIdStr = typeof sessionId === 'string' ? sessionId : String(sessionId || 'Unknown');
