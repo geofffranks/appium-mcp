@@ -58,14 +58,16 @@ export async function withManagedToolAdmission<T>(
       operation,
       operationId,
     });
-  } catch {
+  } catch (error) {
+    const diagnostic = error instanceof Error && /^(Effort authority|APPIUM_MCP_EFFORT)/.test(error.message)
+      ? ` ${error.message}` : '';
     return {
       admitted: false,
       response: {
         ok: false,
         status: 'recovery_required',
         message:
-          'Effort authority could not confirm admission. Preserve the simulator and reconcile status before retrying.',
+          `Effort authority could not confirm admission. Preserve the simulator and reconcile status before retrying.${diagnostic}`,
       },
     };
   }

@@ -80,6 +80,18 @@ describe('effort authority CLI adapter', () => {
     await expect(callEffortAuthority('status', {token: 'must-not-leak'})).rejects.not.toThrow('must-not-leak');
   });
 
+  test('preserves structured recovery on exit 1 but rejects claimed success', async () => {
+    await createCli(`process.stdin.resume(); process.stdin.on('end', () => {
+      process.stdout.write(JSON.stringify({ok:false,status:'recovery_required',message:'authority storage unavailable'}));
+      process.exitCode=1;
+    });`);
+    await expect(callEffortAuthority('status', {})).resolves.toEqual({ok:false,status:'recovery_required',message:'authority storage unavailable'});
+    await createCli(`process.stdin.resume(); process.stdin.on('end', () => {
+      process.stdout.write(JSON.stringify({ok:true,status:'admitted'})); process.exitCode=1;
+    });`);
+    await expect(callEffortAuthority('begin', {})).rejects.toThrow('exit 1');
+  });
+
   test('requires an absolute explicit executable path', async () => {
     process.env.APPIUM_MCP_EFFORT_CLI_PATH = './ios-app-dev-mcp';
     await expect(callEffortAuthority('status', {})).rejects.toThrow('must be an absolute executable path');

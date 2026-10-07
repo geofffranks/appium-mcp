@@ -65,7 +65,7 @@ function invokeJsonCli(executable: string, command: EffortCommand, request: Reco
     let stdout = '';
     let settled = false;
     const timer = setTimeout(() => child.kill('SIGKILL'), COMMAND_TIMEOUT_MS);
-    const fail = () => {
+    const fail = (reason = 'execution failed') => {
       if (settled) {
         return;
       }
@@ -73,7 +73,7 @@ function invokeJsonCli(executable: string, command: EffortCommand, request: Reco
       clearTimeout(timer);
       reject(
         new Error(
-          `Effort authority command '${command}' could not be completed; preserve the simulator and retry status/reconciliation.`,
+          `Effort authority command '${command}' could not be completed (${reason}); preserve the simulator and retry status/reconciliation.`,
         ),
       );
     };
@@ -84,10 +84,23 @@ function invokeJsonCli(executable: string, command: EffortCommand, request: Reco
         child.kill('SIGKILL');
       }
     });
-    child.once('error', fail);
+    child.once('error', (error: NodeJS.ErrnoException) => fail(error.code ?? 'spawn failed'));
     child.once('close', (code) => {
-      if (code !== 0 || Buffer.byteLength(stdout) > MAX_OUTPUT_BYTES) {
-        return fail();
+      if (Buffer.byteLength(stdout) > MAX_OUTPUT_BYTES) {
+        return fail('output limit exceeded');
+      }
+      if (code !== 0) {
+        // The authority emits a structured recovery result even when a
+        // storage/probe error makes the CLI exit 1. Preserve only a validated
+        // non-success envelope; never trust success from a failed command.
+        try {
+          const response = JSON.parse(stdout) as {ok?: boolean; status?: string};
+          if (code !== 1 || response.ok === true || response.status !== 'recovery_required') {
+            return fail(code === null ? 'terminated' : `exit ${code}`);
+          }
+        } catch {
+          return fail(code === null ? 'terminated' : `exit ${code}`);
+        }
       }
       if (settled) {
         return;
