@@ -42,6 +42,7 @@ jest.unstable_mockModule('../../utils/effort-authority.js', () => ({
   finishManagedOperation: jest.fn(),
 }));
 const {default: registerTools} = await import('../../tools/index.js');
+const {setSession, detachSession} = await import('../../session-store.js');
 
 // Update this list when a tool is added, removed, or renamed — that is the
 // point of this test.
@@ -89,6 +90,26 @@ const EXPECTED_TOOL_NAMES = [
 ];
 
 describe('registered MCP tool names', () => {
+  test.each(['http://[::1]:4723', 'http://127.0.0.2:4723', 'http://[::ffff:127.0.0.1]:4723', 'http://[::ffff:7f00:2]:4723'])('tokenless setup and interaction reject local endpoint %s', async (remoteServerUrl) => {
+    const definitions = new Map<string, any>();
+    registerTools({addTool: (definition: any) => definitions.set(definition.name, definition)} as any);
+    authority.mockReset();
+    for (const action of ['create', 'attach']) {
+      const result = await definitions.get('appium_session_management').execute({action, platform: 'android', remoteServerUrl, sessionId: 'foreign', capabilities: '{"platformName":"iOS","appium:isSimulator":false}'}, {});
+      expect(result.structuredContent.status).toBe('denied');
+      expect(result.isError).toBe(false);
+    }
+    const getPageSource = jest.fn();
+    await setSession({getPageSource} as any, 'local-bypass-test', {platformName: 'iOS'}, 'attached', remoteServerUrl);
+    try {
+      const result = await definitions.get('appium_get_page_source').execute({sessionId: 'local-bypass-test'}, {});
+      expect(result.structuredContent.status).toBe('denied');
+      expect(getPageSource).not.toHaveBeenCalled();
+      expect(authority).not.toHaveBeenCalled();
+    } finally {
+      detachSession('local-bypass-test');
+    }
+  });
   test('matches expected set', () => {
     const names: string[] = [];
     const mockServer = {

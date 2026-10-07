@@ -3,6 +3,7 @@ import {describe, expect, test} from '@jest/globals';
 import {
   admissionResult,
   isLocalSimulatorSession,
+  isLocalAppiumEndpoint,
   withManagedToolAdmission,
   type AdmissionAdapter,
 } from '../../utils/managed-tool-guard.js';
@@ -17,6 +18,10 @@ const context = {
 const finish = async () => ({ok: true, status: 'complete'});
 
 describe('managed tool guard', () => {
+  test.each(['http://[::1]:4723', 'http://127.0.0.2:4723', 'http://localhost:4723', 'http://[::ffff:127.0.0.1]:4723', 'http://[::ffff:7f00:2]:4723'])('local endpoint %s cannot use misleading platform hints', async (remoteServerUrl) => {
+    expect(await isLocalAppiumEndpoint(remoteServerUrl)).toBe(true);
+    expect(isLocalSimulatorSession({remoteServerUrl, metadata: {platform: 'android', capabilities: {'appium:isSimulator': false}}})).toBe(true);
+  });
   test('requires credential and explicit target before authority or execution', async () => {
     let began = false;
     let ran = false;
@@ -107,7 +112,7 @@ describe('managed tool guard', () => {
     expect(
       isLocalSimulatorSession({
         metadata: {platform: 'iOS', capabilities: {}},
-        remoteServerUrl: 'https://appium.example.com',
+        remoteServerUrl: 'https://192.0.2.1',
       }),
     ).toBe(false);
   });

@@ -14,12 +14,16 @@ const {recordSessionIntent, recordCreatedSession, verifySessionDeleteBinding, re
   await import('../../utils/managed-session.js');
 
 beforeEach(() => {
-  update.mockReset().mockResolvedValue({ok: true, status: 'updated'});
+  update.mockReset().mockImplementation(async (command) => command === 'resources'
+    ? {ok: true, record: {resources: [{kind: 'wda', owned: true, udid: 'assigned', endpoint: 'http://127.0.0.1:8101'}]}}
+    : {ok: true, status: 'updated'});
+  jest.spyOn(globalThis, 'fetch').mockResolvedValue({ok: true, json: async () => ({value: {device: {udid: 'assigned'}}})} as Response);
   sessionInfo.mockReset();
   bind.mockClear();
 });
 afterEach(() => {
   jest.clearAllMocks();
+  jest.restoreAllMocks();
 });
 
 const args = {effortToken: 'secret', worktree: process.cwd(), operationId: 'create-op', udid: 'assigned'};
@@ -28,7 +32,7 @@ const capabilities = {'appium:udid': 'assigned', 'appium:webDriverAgentUrl': 'ht
 describe('managed embedded session lifetime', () => {
   test('records pending durable intent then promotes the real session ID without retargeting', async () => {
     const binding = await recordSessionIntent(args, capabilities);
-    expect(update.mock.calls[0]).toEqual([
+    expect(update.mock.calls[1]).toEqual([
       'resource-add',
       {
         token: 'secret',
@@ -44,7 +48,7 @@ describe('managed embedded session lifetime', () => {
     ]);
     await recordCreatedSession('actual-session', binding);
     expect(bind).toHaveBeenCalledWith('actual-session', binding);
-    expect(update.mock.calls[1][1]).toMatchObject({
+    expect(update.mock.calls[2][1]).toMatchObject({
       sessionId: 'actual-session',
       endpoint: 'http://127.0.0.1:12345',
       udid: 'assigned',
@@ -56,6 +60,16 @@ describe('managed embedded session lifetime', () => {
     );
     await expect(recordSessionIntent(args, {'appium:udid': 'assigned'})).rejects.toThrow('prepared WDA');
     expect(update).not.toHaveBeenCalled();
+  });
+  test('rejects another device endpoint before creating any session intent', async () => {
+    await expect(recordSessionIntent(args, {...capabilities, 'appium:webDriverAgentUrl': 'http://127.0.0.1:8102'})).rejects.toThrow('owned by this effort');
+    expect(update).not.toHaveBeenCalledWith('resource-add', expect.anything());
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+  test('rejects a registered endpoint whose current WDA identifies another device', async () => {
+    jest.mocked(globalThis.fetch).mockResolvedValue({ok: true, json: async () => ({value: {device: {udid: 'other'}}})} as Response);
+    await expect(recordSessionIntent(args, capabilities)).rejects.toThrow('independently identify');
+    expect(update).not.toHaveBeenCalledWith('resource-add', expect.anything());
   });
   test('deletion requires explicit session and owner binding and uses deletion operation for verified removal', async () => {
     const binding = {...args, worktree: await realpath(args.worktree), inventoryEndpoint: 'http://127.0.0.1:12345'};

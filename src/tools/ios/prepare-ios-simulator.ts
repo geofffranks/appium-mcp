@@ -329,19 +329,20 @@ async function installWdaStep(
       return;
     }
 
-    const wdaResource = {kind: 'wda', id: `wda:${managed.operationId}`, udid, bundleId};
+    const wdaPort = await findFreePort();
+    const webDriverAgentUrl = wdaBaseUrl(wdaPort);
+    const wdaResource = {kind: 'wda', id: `wda:${managed.operationId}`, udid, bundleId, port: wdaPort, endpoint: webDriverAgentUrl};
     await recordPreparationResource(managed, {...wdaResource, pending: true});
     if (!wdaState.installed) {
       log.info(`Installing WDA on simulator ${udid}...`);
       await installAppOnSimulator(wdaAppPath, udid);
     }
-    const wdaPort = await findFreePort();
     let readiness: WdaReadiness = {ready: false, elapsedMs: 0, lastProbe: 'Launch did not complete'};
     try {
       log.info(`Launching WDA (${bundleId}) on port ${wdaPort}...`);
       await launchAppOnSimulator(bundleId, udid, wdaPort);
-      await recordPreparationResource(managed, {...wdaResource, pending: false});
       readiness = await waitForWdaReady(wdaPort);
+      if (readiness.ready) {await recordPreparationResource(managed, {...wdaResource, pending: false});}
     } finally {
       // Once WDA has bound the port the OS guards it; on failure it's free again.
       // Either way the reservation has served its purpose — release it.
@@ -359,7 +360,6 @@ async function installWdaStep(
       return;
     }
 
-    const webDriverAgentUrl = wdaBaseUrl(wdaPort);
     result.wdaLocalPort = wdaPort;
     result.webDriverAgentUrl = webDriverAgentUrl;
     result.capabilitiesHint = {

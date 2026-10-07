@@ -31,8 +31,24 @@ export async function recordSessionIntent(
   if (capabilities['appium:udid'] !== args.udid) {
     throw new Error('Session capabilities do not target the assigned simulator.');
   }
-  if (!capabilities['appium:webDriverAgentUrl']) {
+  const suppliedEndpoint = capabilities['appium:webDriverAgentUrl'];
+  if (typeof suppliedEndpoint !== 'string') {
     throw new Error('Managed simulator sessions require an explicitly prepared WDA endpoint.');
+  }
+  const resources = await callEffortAuthority('resources', {token: args.effortToken});
+  if (!resources.ok) {throw new Error('WDA authority lookup failed; preserve ownership and reconcile.');}
+  const endpoint = new URL(suppliedEndpoint).href;
+  const ownedWda = resources.ok && resources.record?.resources?.find((resource: Record<string, unknown>) =>
+    resource.kind === 'wda' && resource.owned === true && !resource.pending && resource.udid === args.udid &&
+    typeof resource.endpoint === 'string' && new URL(resource.endpoint).href === endpoint);
+  if (!ownedWda) {
+    throw new Error('WDA endpoint is not a ready resource owned by this effort and assigned simulator; nothing started.');
+  }
+  const response = await fetch(new URL('status', endpoint), {signal: AbortSignal.timeout(3000)});
+  if (!response.ok) {throw new Error('Owned WDA endpoint is not healthy; preserve ownership and reconcile.');}
+  const status = await response.json() as {value?: {device?: {udid?: string}}};
+  if (status.value?.device?.udid !== args.udid) {
+    throw new Error('WDA status does not independently identify the assigned simulator; nothing started.');
   }
   if (
     capabilities['appium:fullReset'] ||

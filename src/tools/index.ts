@@ -20,6 +20,7 @@ import {getSessionInfo} from '../session-store.js';
 import {
   admissionResult,
   isLocalSimulatorSession,
+  isLocalAppiumEndpoint,
   managedContextFromArgs,
   withManagedToolAdmission,
 } from '../utils/managed-tool-guard.js';
@@ -117,11 +118,7 @@ export default function registerTools(server: FastMCP): void {
                 }
               }
               if (typeof values.remoteServerUrl === 'string') {
-                const remoteInfo = {
-                  metadata: {platform: String(values.platform ?? capabilities.platformName ?? 'ios'), capabilities},
-                  remoteServerUrl: values.remoteServerUrl,
-                };
-                if (isLocalSimulatorSession(remoteInfo)) {
+                if (await isLocalAppiumEndpoint(values.remoteServerUrl)) {
                   return admissionResult({
                     ok: false,
                     status: 'denied',
@@ -153,8 +150,9 @@ export default function registerTools(server: FastMCP): void {
             }
             const explicitSessionId = explicit?.sessionId;
             const session = getSessionInfo(explicitSessionId);
-            const local = isLocalSimulatorSession(session);
-            const defaultLocal = !explicitSessionId && isLocalSimulatorSession(getSessionInfo());
+            const local = session?.remoteServerUrl ? await isLocalAppiumEndpoint(session.remoteServerUrl) : isLocalSimulatorSession(session);
+            const defaultSession = getSessionInfo();
+            const defaultLocal = !explicitSessionId && (defaultSession?.remoteServerUrl ? await isLocalAppiumEndpoint(defaultSession.remoteServerUrl) : isLocalSimulatorSession(defaultSession));
             if (defaultLocal) {
               return admissionResult({
                 ok: false,

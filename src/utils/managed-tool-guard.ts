@@ -1,4 +1,7 @@
 import {realpath} from 'node:fs/promises';
+import {lookup} from 'node:dns/promises';
+import {isIP} from 'node:net';
+import {networkInterfaces} from 'node:os';
 
 import {callEffortAuthority, finishManagedOperation} from './effort-authority.js';
 import type {EffortResponse} from './effort-authority.js';
@@ -162,36 +165,54 @@ export function managedContextFromArgs(args: unknown): ManagedToolContext | null
   };
 }
 
+function localAddress(address: string): boolean {
+  let normalized = address.toLowerCase().replace(/^\[|\]$/g, '');
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized);
+  if (mapped) {
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    normalized = `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
+  }
+  if (normalized === '::1' || normalized.startsWith('127.') || normalized.startsWith('::ffff:127.')) {return true;}
+  return Object.values(networkInterfaces()).flat().some((entry) => entry?.address.toLowerCase() === normalized);
+}
+
+export async function isLocalAppiumEndpoint(endpoint: string): Promise<boolean> {
+  try {
+    const host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || localAddress(host)) {return true;}
+    if (isIP(host)) {return false;}
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const addresses = await Promise.race([
+        lookup(host, {all: true}),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('DNS timeout')), 2000); }),
+      ]);
+      return addresses.length === 0 || addresses.some((entry) => localAddress(entry.address));
+    } finally {
+      if (timer) {clearTimeout(timer);}
+    }
+  } catch {
+    // An unresolved endpoint cannot establish a remote exemption.
+    return true;
+  }
+}
+
 export function isLocalSimulatorSession(
   info: {
     metadata?: {platform?: string | null; capabilities?: Record<string, unknown>};
     remoteServerUrl?: string;
   } | null,
 ): boolean {
-  if (!info || !/ios/i.test(info.metadata?.platform ?? '')) {
-    return false;
+  if (!info) {return false;}
+  if (info.remoteServerUrl) {
+    try {
+      const host = new URL(info.remoteServerUrl).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      return host === 'localhost' || host.endsWith('.localhost') || localAddress(host) || !isIP(host);
+    } catch { return true; }
   }
   const caps = info.metadata?.capabilities ?? {};
-  const simulator = caps['appium:isSimulator'] ?? caps.isSimulator;
-  if (simulator === true) {
-    return true;
-  }
-  if (simulator === false) {
-    return false;
-  }
-  const url = info.remoteServerUrl;
-  if (!url) {
-    return true;
-  } // Embedded XCUITest session; treat unknown local iOS as managed.
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    if (host === 'localhost' || host === '::1' || host === '127.0.0.1' || host.endsWith('.localhost')) {
-      return true;
-    }
-    return false;
-  } catch {
-    return true;
-  }
+  return /ios|tvos/i.test(info.metadata?.platform ?? String(caps.platformName ?? '')) || /xcuitest/i.test(String(caps['appium:automationName'] ?? ''));
 }
 
 function stringValue(value: unknown): string | undefined {
