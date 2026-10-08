@@ -1,3 +1,49 @@
+## [1.95.3](https://github.com/appium/appium-mcp/compare/v1.95.2...v1.95.3) (2026-10-04)
+
+### Bug Fixes
+
+* remove workaround to click safari ([#557](https://github.com/appium/appium-mcp/issues/557)) ([0dc389b](https://github.com/appium/appium-mcp/commit/0dc389b53cc8176290e76298e5840e18c52c5564))
+
+## [1.95.2](https://github.com/appium/appium-mcp/compare/v1.95.1...v1.95.2) (2026-10-04)
+
+### Bug Fixes
+
+* **gestures:** pass scroll distance to mobile: scroll ([#556](https://github.com/appium/appium-mcp/issues/556)) ([b9c0667](https://github.com/appium/appium-mcp/commit/b9c0667b0102a6b1744f5367c561072d3e736260))
+
+## [1.95.1](https://github.com/appium/appium-mcp/compare/v1.95.0...v1.95.1) (2026-09-26)
+
+### Bug Fixes
+
+* **session:** use remotePath and payload for mobile file commands ([#547](https://github.com/appium/appium-mcp/issues/547)) ([eef6fea](https://github.com/appium/appium-mcp/commit/eef6fea767df0909f462afd1ed0e8fb64b11b5ac))
+
+## [1.95.0](https://github.com/appium/appium-mcp/compare/v1.94.3...v1.95.0) (2026-09-25)
+
+### Features
+
+* add operator controls for direct connect and remote app URLs ([#546](https://github.com/appium/appium-mcp/issues/546)) ([5eba012](https://github.com/appium/appium-mcp/commit/5eba0129a0c8a308aad711650590cf4d3e338e08))
+
+## [1.94.3](https://github.com/appium/appium-mcp/compare/v1.94.2...v1.94.3) (2026-09-21)
+
+### Bug Fixes
+
+* **press-key:** reject keyCode on iOS instead of pressing HOME ([#539](https://github.com/appium/appium-mcp/issues/539)) ([eff7688](https://github.com/appium/appium-mcp/commit/eff76888b0dd7ab159448f03718d6aa04070d018))
+
+## [1.94.2](https://github.com/appium/appium-mcp/compare/v1.94.1...v1.94.2) (2026-09-19)
+
+### Bug Fixes
+
+* restrict screen recording scaling options ([#535](https://github.com/appium/appium-mcp/issues/535)) ([5302858](https://github.com/appium/appium-mcp/commit/53028586f5ea31d8d4b26c98b3fb5634e2199c37))
+
+## [1.94.1](https://github.com/appium/appium-mcp/compare/v1.94.0...v1.94.1) (2026-09-18)
+
+### Bug Fixes
+
+* **docs:** find globally installed doc package with Homebrew node ([#537](https://github.com/appium/appium-mcp/issues/537)) ([c01d3d9](https://github.com/appium/appium-mcp/commit/c01d3d97f512025cb8203fd34841374165266983))
+
+### Code Refactoring
+
+* refactoring cli arguments ([#526](https://github.com/appium/appium-mcp/issues/526)) ([f3fcc0c](https://github.com/appium/appium-mcp/commit/f3fcc0ce3de2a34813c53149fa9e20d7214a60fc))
+
 ## [1.94.0](https://github.com/appium/appium-mcp/compare/v1.93.0...v1.94.0) (2026-09-10)
 
 ### Features
