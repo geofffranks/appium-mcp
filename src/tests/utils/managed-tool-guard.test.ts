@@ -91,6 +91,41 @@ describe('managed tool guard', () => {
     expect(ran).toBe(false);
   });
 
+  test('exposes bounded redacted preparation diagnostics while requiring recovery', async () => {
+    const adapter: AdmissionAdapter = {begin: async () => ({ok: true, status: 'admitted'}), finish};
+    const detail = `Request failed token=super-secret at https://user:password@example.test/path ${'x'.repeat(2000)}`;
+    const result = await withManagedToolAdmission(
+      context,
+      'device',
+      async () => ({content: [{type: 'text', text: JSON.stringify({ready: false, wda_install: {status: 'failed', detail}})}]}),
+      adapter,
+    );
+
+    expect(result.admitted).toBe(false);
+    expect(result.response?.status).toBe('recovery_required');
+    expect(result.response?.diagnostic).toContain('wda_install: Request failed');
+    expect(result.response?.diagnostic).toContain('token=[REDACTED]');
+    expect(result.response?.diagnostic).toContain('https://[REDACTED]@example.test/path');
+    expect(result.response?.diagnostic).not.toContain('super-secret');
+    expect(result.response?.diagnostic).not.toContain('password');
+    const diagnostic = result.response?.diagnostic;
+    if (typeof diagnostic !== 'string') {throw new Error('Expected a recovery diagnostic');}
+    expect(diagnostic.length).toBeLessThanOrEqual(1000);
+    expect(result.response?.message).toContain('preserve resources and reconcile');
+  });
+
+  test('exposes sanitized thrown diagnostics without completing an uncertain operation', async () => {
+    const adapter: AdmissionAdapter = {begin: async () => ({ok: true, status: 'admitted'}), finish};
+    const result = await withManagedToolAdmission(context, 'device', async () => {
+      throw new Error('WDA launch failed api_key=super-secret');
+    }, adapter);
+
+    expect(result.admitted).toBe(false);
+    expect(result.response?.status).toBe('recovery_required');
+    expect(result.response?.diagnostic).toBe('WDA launch failed api_key=[REDACTED]');
+    expect(result.response?.diagnostic).not.toContain('super-secret');
+  });
+
   test('authority uncertainty fails closed and classifies iOS local/remote sessions', async () => {
     const adapter: AdmissionAdapter = {
       begin: async () => {

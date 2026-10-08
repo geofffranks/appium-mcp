@@ -5,6 +5,7 @@ import {networkInterfaces} from 'node:os';
 
 import {callEffortAuthority, finishManagedOperation} from './effort-authority.js';
 import type {EffortResponse} from './effort-authority.js';
+import {sanitizeDiagnostic} from './wda-readiness.js';
 
 export interface ManagedToolContext {
   effortToken?: string;
@@ -76,12 +77,17 @@ export async function withManagedToolAdmission<T>(
   }
 
   let result: T | undefined;
+  let diagnostic: string | undefined;
   let outcome: 'complete' | 'uncertain' = 'uncertain';
   try {
     result = await execute();
     outcome = isVerifiedToolSuccess(result) ? 'complete' : 'uncertain';
-  } catch {
+    if (outcome === 'uncertain') {
+      diagnostic = toolFailureDiagnostic(result);
+    }
+  } catch (error) {
     // A thrown tool may have started a side effect; never declare its lifetime closed.
+    diagnostic = sanitizeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, MAX_TOOL_DIAGNOSTIC_CHARS);
   }
   try {
     const finished = await adapter.finish(context.effortToken, operationId, outcome);
@@ -92,7 +98,8 @@ export async function withManagedToolAdmission<T>(
         response: {
           ok: false,
           status: 'recovery_required',
-          message: 'Managed operation or finalization is uncertain; preserve resources and reconcile before retrying.',
+          message: recoveryMessage('Managed operation or finalization is uncertain; preserve resources and reconcile before retrying.', diagnostic),
+          ...(diagnostic ? {diagnostic} : {}),
         },
       };
     }
@@ -103,11 +110,58 @@ export async function withManagedToolAdmission<T>(
       response: {
         ok: false,
         status: 'recovery_required',
-        message: 'Managed operation finalization could not be confirmed; preserve resources and reconcile.',
+        message: recoveryMessage('Managed operation finalization could not be confirmed; preserve resources and reconcile.', diagnostic),
+        ...(diagnostic ? {diagnostic} : {}),
       },
     };
   }
   return {admitted: true, result, operationId};
+}
+
+const MAX_TOOL_DIAGNOSTIC_CHARS = 1000;
+
+function recoveryMessage(message: string, diagnostic?: string): string {
+  return diagnostic ? `${message} Diagnostic: ${diagnostic}` : message;
+}
+
+function toolFailureDiagnostic(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') {
+    return undefined;
+  }
+  const value = result as {
+    structuredContent?: unknown;
+    content?: Array<{type: string; text?: string}>;
+  };
+  const candidates: unknown[] = [value.structuredContent];
+  for (const block of value.content ?? []) {
+    if (block.type !== 'text' || !block.text) {
+      continue;
+    }
+    try {
+      candidates.push(JSON.parse(block.text));
+    } catch {
+      candidates.push(block.text);
+    }
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const diagnostic = sanitizeDiagnostic(candidate).slice(0, MAX_TOOL_DIAGNOSTIC_CHARS);
+      if (diagnostic) {return diagnostic;}
+      continue;
+    }
+    if (!candidate || typeof candidate !== 'object') {continue;}
+    const value = candidate as Record<string, unknown>;
+    for (const step of ['boot', 'wda_download', 'wda_install']) {
+      const detail = value[step];
+      if (detail && typeof detail === 'object') {
+        const entry = detail as Record<string, unknown>;
+        if (entry.status === 'failed' && typeof entry.detail === 'string') {
+          return sanitizeDiagnostic(`${step}: ${entry.detail}`).slice(0, MAX_TOOL_DIAGNOSTIC_CHARS);
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 function isVerifiedToolSuccess(result: unknown): boolean {
