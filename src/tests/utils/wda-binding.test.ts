@@ -16,7 +16,7 @@ const processLine = `84571 Wed Oct  7 22:44:51 2026 ${executable}\n`;
 describe('WDA process binding', () => {
   test('parses observed listener, launchctl and process evidence', async () => {
     const run = jest.fn(async (command: string) => {
-      if (command === 'lsof') {return {stdout: 'p84571\n', stderr: 'lsof: IPv6 warning'} as any;}
+      if (command === 'lsof') {return {stdout: 'p84571\nn*:52120\n', stderr: 'lsof: IPv6 warning'} as any;}
       if (command === 'xcrun') {return {stdout: '84571 0 UIKitApplication:com.facebook.WebDriverAgentRunner.xctrunner[0721][rb-legacy]\n'} as any;}
       return {stdout: processLine} as any;
     }) as any;
@@ -26,11 +26,17 @@ describe('WDA process binding', () => {
   });
 
   test.each([
-    ['', 52120],
-    ['p1\np2\n', 52120],
-    ['p84571\np84571\n', 52120],
-  ])('fails closed on malformed or ambiguous lsof output', (output, port) => {
-    expect(() => parseLsofListenerPid(output, port)).toThrow('ambiguous');
+    ['', 52120, 'ambiguous'],
+    ['p1\np2\nn*:52120\n', 52120, 'ambiguous'],
+    ['p84571\np84571\nn*:52120\n', 52120, 'ambiguous'],
+    ['p84571\nn127.0.0.1:52120\n', 52120, undefined],
+    ['p84571\nn*:52120\n', 52120, undefined],
+    ['p84571\nn[::]:52120\n', 52120, undefined],
+    ['p84571\nn*:52121\n', 52120, 'address'],
+    ['p84571\nn192.0.2.1:52120\n', 52120, 'address'],
+  ])('validates lsof listener address and PID output', (output, port, error) => {
+    if (error) {expect(() => parseLsofListenerPid(output, port)).toThrow(error);}
+    else {expect(parseLsofListenerPid(output, port)).toBe(84571);}
   });
 
   test('fails closed on malformed and multiple WDA process records', () => {

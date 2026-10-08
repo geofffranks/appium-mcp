@@ -23,6 +23,22 @@ async function requireUpdate(
   }
 }
 
+function requireSupportedWdaEndpoint(value: string): URL {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    throw new Error('Managed WDA endpoint must be a literal local HTTP endpoint; preserve ownership and reconcile.');
+  }
+  if (
+    endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || !endpoint.port ||
+    endpoint.username || endpoint.password || value !== endpoint.origin
+  ) {
+    throw new Error('Managed WDA endpoint must be a literal local HTTP endpoint without credentials or extra URL components.');
+  }
+  return endpoint;
+}
+
 export async function recordSessionIntent(
   args: ManagedSessionArgs,
   capabilities: Record<string, any>,
@@ -38,16 +54,24 @@ export async function recordSessionIntent(
   if (typeof suppliedEndpoint !== 'string') {
     throw new Error('Managed simulator sessions require an explicitly prepared WDA endpoint.');
   }
+  const requestedEndpoint = requireSupportedWdaEndpoint(suppliedEndpoint);
   const resources = await callEffortAuthority('resources', {token: args.effortToken});
   if (!resources.ok) {throw new Error('WDA authority lookup failed; preserve ownership and reconcile.');}
-  const endpoint = new URL(suppliedEndpoint).href;
-  const ownedWda = resources.ok && resources.record?.resources?.find((resource: Record<string, unknown>) =>
-    resource.kind === 'wda' && resource.owned === true && !resource.pending && resource.udid === args.udid &&
-    typeof resource.endpoint === 'string' && new URL(resource.endpoint).href === endpoint);
+  const endpoint = requestedEndpoint.href;
+  const ownedWda = resources.ok && resources.record?.resources?.find((resource: Record<string, unknown>) => {
+    if (resource.kind !== 'wda' || resource.owned !== true || resource.pending || resource.udid !== args.udid || typeof resource.endpoint !== 'string') {
+      return false;
+    }
+    try {
+      return requireSupportedWdaEndpoint(resource.endpoint).href === endpoint;
+    } catch {
+      return false;
+    }
+  });
   if (!ownedWda) {
     throw new Error('WDA endpoint is not a ready resource owned by this effort and assigned simulator; nothing started.');
   }
-  const port = new URL(endpoint).port ? Number(new URL(endpoint).port) : 80;
+  const port = requestedEndpoint.port ? Number(requestedEndpoint.port) : 80;
   const before = await captureWdaCensus(args.udid, port, deps.run);
   const response = await fetch(new URL('status', endpoint), {signal: AbortSignal.timeout(3000)});
   if (!response.ok) {throw new Error('Owned WDA endpoint is not healthy; preserve ownership and reconcile.');}
