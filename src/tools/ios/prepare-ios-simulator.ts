@@ -1,4 +1,6 @@
 import path from 'node:path';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 
 import {fs, net, plist, zip} from '@appium/support';
 /**
@@ -159,19 +161,13 @@ async function getAppBundleId(appPath: string): Promise<string> {
 }
 
 async function getWDAState(simulatorUdid: string): Promise<WDAState> {
-  let installed = false;
+  let installed: boolean;
 
-  // Check if installed via simctl listapps
+  // simctl listapps emits a plist; convert it with Apple's plutil before inspecting it.
   try {
-    const {stdout} = await exec('xcrun', ['simctl', 'listapps', simulatorUdid, '--json']);
-    const data = JSON.parse(stdout);
-
-    for (const [bundleId, appInfo] of Object.entries(data)) {
-      if (bundleId.includes('WebDriverAgentRunner') || (appInfo as any)?.CFBundleName?.includes('WebDriverAgent')) {
-        installed = true;
-        break;
-      }
-    }
+    const {stdout} = await exec('xcrun', ['simctl', 'listapps', simulatorUdid]);
+    const data = await convertListAppsPlistToJson(stdout);
+    installed = isWdaInstalledInInventory(data);
   } catch {
     throw new Error('WDA installation state could not be verified; preserve the simulator.');
   }
@@ -187,6 +183,41 @@ async function getWDAState(simulatorUdid: string): Promise<WDAState> {
     return {installed: true, running};
   } catch {
     throw new Error('WDA running state could not be verified; preserve the simulator.');
+  }
+}
+
+function isWdaInstalledInInventory(data: unknown): boolean {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('simctl listapps returned an invalid inventory');
+  }
+
+  let installed = false;
+  for (const [bundleId, appInfo] of Object.entries(data)) {
+    if (!appInfo || typeof appInfo !== 'object' || Array.isArray(appInfo)) {
+      throw new Error('simctl listapps returned an invalid app record');
+    }
+    const bundleName = (appInfo as {CFBundleName?: unknown}).CFBundleName;
+    if (bundleId.includes('WebDriverAgentRunner') || (typeof bundleName === 'string' && bundleName.includes('WebDriverAgent'))) {
+      installed = true;
+    }
+  }
+  return installed;
+}
+
+async function convertListAppsPlistToJson(plist: string): Promise<Record<string, unknown>> {
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'appium-mcp-wda-listapps-'));
+  const plistPath = path.join(temporaryDirectory, 'listapps.plist');
+
+  try {
+    await writeFile(plistPath, plist, 'utf8');
+    const {stdout} = await exec('plutil', ['-convert', 'json', '-o', '-', '--', plistPath], {timeout: 5000});
+    const result: unknown = JSON.parse(stdout);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      throw new Error('plutil returned an invalid inventory');
+    }
+    return result as Record<string, unknown>;
+  } finally {
+    await rm(temporaryDirectory, {recursive: true, force: true});
   }
 }
 
