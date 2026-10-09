@@ -20,6 +20,22 @@ MCP Appium is an intelligent MCP (Model Context Protocol) server designed to emp
 - [Contributing](#-contributing)
 - [License](#-license)
 
+## Shared iOS effort ownership
+
+When Appium and native iOS workflows share a simulator, both must use the same
+`ios-app-dev-mcp` executable, OS user and durable effort state. Appium sends the
+versioned JSON `effort` CLI protocol. Set an absolute `APPIUM_MCP_EFFORT_CLI_PATH`
+when the co-installed binary cannot be used; the existing sibling-binary and
+`PATH` fallbacks remain supported. Do not wrap Appium calls in another operation
+admission: managed Appium tools already admit their own operation.
+
+A simulator boot is recorded as kind `simulatorBoot`, ID
+`simulator-boot:<UDID>`, first pending and then confirmed after boot succeeds.
+Native owned shutdown uses this identity and only shuts down an effort-booted
+simulator after Appium-owned session/WDA resources are cleaned up. Appium retains
+simulator preparation, explicitly targeted session management, and owned WDA
+cleanup; neither side may infer ownership from a booted simulator alone.
+
 ## 🚀 Features
 
 - **Cross-Platform Support**: Automate tests for both Android (UiAutomator2) and iOS (XCUITest).
