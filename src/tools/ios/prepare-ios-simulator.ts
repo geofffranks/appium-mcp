@@ -448,7 +448,7 @@ async function prepareSimulator(
       log.info(`Booting simulator ${simulator.name} (${udid})...`);
       const simctl = new Simctl();
       simctl.udid = udid;
-      const bootResource = {kind: 'simulatorBoot', id: `simulator-boot:${udid}`, udid};
+      const bootResource = {kind: 'simulatorBoot', id: `boot:${managed.operationId}`, udid};
       await recordPreparationResource(managed, {...bootResource, pending: true});
       await simctl.bootDevice();
       await recordPreparationResource(managed, {...bootResource, pending: false});

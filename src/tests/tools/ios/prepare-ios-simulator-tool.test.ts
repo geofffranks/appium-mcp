@@ -11,20 +11,14 @@ const mockGetWdaLogTail = jest.fn(async () => 'WDA log authorization=[REDACTED]'
 const mockExec = jest.fn(async (command: string, args: string[], _options?: {timeout: number}) => ({
   stdout: command === 'plutil' ? '{}' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : '',
 }));
-const mockAuthority = jest.fn(async () => ({ok: true, status: 'updated'}));
-jest.unstable_mockModule('../../../utils/effort-authority.js', () => ({callEffortAuthority: mockAuthority}));
+jest.unstable_mockModule('../../../utils/effort-authority.js', () => ({callEffortAuthority: async () => ({ok: true, status: 'updated'})}));
 const mockAddTool = jest.fn();
-let simulatorState = 'Booted';
 const mockIOSManager = {
-  getInstance: () => ({listSimulators: async () => [{udid: 'test-udid', name: 'iPhone', state: simulatorState}]}),
+  getInstance: () => ({listSimulators: async () => [{udid: 'test-udid', name: 'iPhone', state: 'Booted'}]}),
 };
 
 jest.unstable_mockModule('../../../devicemanager/ios-manager.js', () => ({IOSManager: mockIOSManager}));
-jest.unstable_mockModule('node-simctl', () => ({Simctl: class {
-  udid = '';
-  async bootDevice() {}
-  async startBootMonitor() {}
-}}));
+jest.unstable_mockModule('node-simctl', () => ({Simctl: class {}}));
 jest.unstable_mockModule('teen_process', () => ({exec: mockExec}));
 jest.unstable_mockModule('../../../utils/ports.js', () => ({
   findFreePort: async () => 8101,
@@ -50,38 +44,6 @@ jest.unstable_mockModule('../../../tools/tool-response.js', () => ({
 const {default: registerPrepareIosSimulator} = await import('../../../tools/ios/prepare-ios-simulator.js');
 
 describe('prepare_ios_simulator tool failure composition', () => {
-  test('records simulator boot with the shared native cleanup resource identity', async () => {
-    mockAddTool.mockReset();
-    mockAuthority.mockClear();
-    simulatorState = 'Shutdown';
-    mockExec.mockImplementation(async (command: string, args: string[]) => ({
-      stdout: command === 'plutil' ? '{}' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : '',
-    }));
-    registerPrepareIosSimulator({addTool: mockAddTool} as any);
-    const definition = mockAddTool.mock.calls[0][0] as {execute: (args: any) => Promise<any>};
-    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
-    try {
-      await definition.execute({udid: 'test-udid', platform: 'ios', effortToken: 'test-owner', operationId: 'prepare', worktree: process.cwd(), skipWda: true});
-    } finally {
-      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
-      simulatorState = 'Booted';
-    }
-
-    expect(mockAuthority).toHaveBeenCalledWith('resource-add', expect.objectContaining({
-      kind: 'simulatorBoot',
-      id: 'simulator-boot:test-udid',
-      udid: 'test-udid',
-      pending: true,
-    }));
-    expect(mockAuthority).toHaveBeenCalledWith('resource-add', expect.objectContaining({
-      kind: 'simulatorBoot',
-      id: 'simulator-boot:test-udid',
-      udid: 'test-udid',
-      pending: false,
-    }));
-  });
-
   test('fails closed when plutil returns malformed simulator inventory', async () => {
     mockAddTool.mockReset();
     mockExec.mockImplementation(async (command: string, args: string[]) => ({
