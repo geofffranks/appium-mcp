@@ -70,7 +70,6 @@ jest.unstable_mockModule('../../../session-store', () => ({
   listPersistedSessions: jest.fn(() => []),
   removePersistedSession: jest.fn(),
   setSession: jest.fn(),
-  bindManagedSession: jest.fn(),
   getSessionInfo: jest.fn(),
   getDriver: jest.fn(),
   getSessionOwnership: jest.fn(),
@@ -187,15 +186,13 @@ describe('operator connection policy integration', () => {
     {'appium:options': {app: 'https://example.test/app.ipa'}},
   ])('rejects embedded app URLs before creating a driver session or recording managed ownership', async (capabilities) => {
     process.env.ALLOW_REMOTE_APP_URLS = 'false';
-    for (const effortToken of [undefined, 'policy-rejection-must-precede-ownership']) {
-      const result = await createSessionAction({platform: 'ios', capabilities, effortToken});
-      expect(result.isError).toBe(true);
-      expect(result.content[0]).toEqual(
-        expect.objectContaining({text: expect.stringContaining('ALLOW_REMOTE_APP_URLS=false')}),
-      );
-      expect(mockNewSession).not.toHaveBeenCalled();
-      expect(mockSetSession).not.toHaveBeenCalled();
-    }
+    const result = await createSessionAction({platform: 'ios', capabilities});
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toEqual(
+      expect.objectContaining({text: expect.stringContaining('ALLOW_REMOTE_APP_URLS=false')}),
+    );
+    expect(mockNewSession).not.toHaveBeenCalled();
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 });
 

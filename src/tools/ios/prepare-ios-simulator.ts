@@ -15,8 +15,6 @@ import {z} from 'zod';
 
 import {IOSManager} from '../../devicemanager/ios-manager.js';
 import log from '../../logger.js';
-import {callEffortAuthority} from '../../utils/effort-authority.js';
-import type {ManagedSessionArgs} from '../../utils/managed-session.js';
 import {resolveAppiumMcpCachePath} from '../../utils/paths.js';
 import {findFreePort, releaseReservedPort} from '../../utils/ports.js';
 import {getWdaLogTail, sanitizeDiagnostic, waitForWdaReady, type WdaReadiness} from '../../utils/wda-readiness.js';
@@ -318,52 +316,25 @@ async function resolveWdaAppPath(
   return {wdaAppPath, version: wdaVersion, source: 'download'};
 }
 
-async function recordPreparationResource(
-  managed: ManagedSessionArgs,
-  resource: Record<string, unknown>,
-): Promise<void> {
-  if (!managed.effortToken || !managed.operationId || !managed.worktree) {
-    throw new Error('Managed preparation requires effortToken, operationId and worktree.');
-  }
-  const response = await callEffortAuthority('resource-add', {
-    token: managed.effortToken,
-    operationId: managed.operationId,
-    owned: true,
-    lifetime: 'keepalive',
-    ...resource,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Preparation resource could not be recorded (${response.status}); preserve the simulator and reconcile.`,
-    );
-  }
-}
-
 async function installWdaStep(
   result: PrepareResult,
   udid: string,
   wdaAppPath: string,
-  managed: ManagedSessionArgs,
 ): Promise<void> {
   try {
     const wdaState = await getWDAState(udid);
     const bundleId = await getAppBundleId(wdaAppPath);
 
-    // Never replace a WDA that may belong to an operator or another effort.
-    // Reuse cannot be claimed safely by this flow because its listener identity
-    // and ownership are not available from simulator state alone.
     if (wdaState.running) {
       result.wda_install = {
-        status: 'failed',
-        detail: `A WDA instance is already running on simulator ${udid}; it was preserved. Stop only an instance owned by this effort before preparing again.`,
+        status: 'skipped',
+        detail: `WDA is already running on simulator ${udid}; existing instance was preserved.`,
       };
       return;
     }
 
     const wdaPort = await findFreePort();
     const webDriverAgentUrl = wdaBaseUrl(wdaPort);
-    const wdaResource = {kind: 'wda', id: `wda:${managed.operationId}`, udid, bundleId, port: wdaPort, endpoint: webDriverAgentUrl};
-    await recordPreparationResource(managed, {...wdaResource, pending: true});
     if (!wdaState.installed) {
       log.info(`Installing WDA on simulator ${udid}...`);
       await installAppOnSimulator(wdaAppPath, udid);
@@ -373,7 +344,6 @@ async function installWdaStep(
       log.info(`Launching WDA (${bundleId}) on port ${wdaPort}...`);
       await launchAppOnSimulator(bundleId, udid, wdaPort);
       readiness = await waitForWdaReady(wdaPort);
-      if (readiness.ready) {await recordPreparationResource(managed, {...wdaResource, pending: false});}
     } finally {
       // Once WDA has bound the port the OS guards it; on failure it's free again.
       // Either way the reservation has served its purpose — release it.
@@ -415,7 +385,6 @@ async function prepareSimulator(
   skipWda: boolean,
   forceRefreshWda: boolean,
   platform: 'ios' | 'tvos' = 'ios',
-  managed: ManagedSessionArgs = {},
 ): Promise<PrepareResult> {
   const result: PrepareResult = {
     boot: {status: 'skipped', detail: ''},
@@ -448,10 +417,7 @@ async function prepareSimulator(
       log.info(`Booting simulator ${simulator.name} (${udid})...`);
       const simctl = new Simctl();
       simctl.udid = udid;
-      const bootResource = {kind: 'simulatorBoot', id: `boot:${managed.operationId}`, udid};
-      await recordPreparationResource(managed, {...bootResource, pending: true});
       await simctl.bootDevice();
-      await recordPreparationResource(managed, {...bootResource, pending: false});
       await simctl.startBootMonitor({timeout: 120000});
       result.boot = {
         status: 'completed',
@@ -503,16 +469,13 @@ async function prepareSimulator(
   }
 
   // ── Step 3: Install & launch WDA ──
-  await installWdaStep(result, udid, wdaAppPath, managed);
+  await installWdaStep(result, udid, wdaAppPath);
   return result;
 }
 
 // ── Tool registration ──
 
 const prepareIosSimulatorSchema = z.object({
-  effortToken: z.string().optional(),
-  operationId: z.string().optional(),
-  worktree: z.string().optional(),
   udid: z.string().describe('The UDID of the iOS simulator to prepare. Use select_device to get this.'),
   platform: z
     .enum(['ios', 'tvos'])
@@ -532,7 +495,7 @@ export default function prepareIosSimulator(server: FastMCP): void {
     description:
       'Boot an iOS/tvOS simulator, download/cache WDA, and launch it on a free per-simulator port. ' +
       'Pass capabilitiesHint (appium:webDriverAgentUrl) to appium_session_management action=create to reuse WDA. ' +
-      'Managed preparation requires effortToken, worktree and stable operationId. Existing WDA is preserved, never replaced. ' +
+      'Existing WDA is preserved when already running. ' +
       'skipWda=true only boots. APPIUM_MCP_WDA_APP_PATH can point to an extracted WebDriverAgentRunner-Runner.app (absolute path) to skip download.',
     parameters: prepareIosSimulatorSchema,
     annotations: {
@@ -548,7 +511,7 @@ export default function prepareIosSimulator(server: FastMCP): void {
 
       log.info(`Preparing ${platform} simulator ${udid} (skipWda=${skipWda}, forceRefreshWda=${forceRefreshWda})`);
 
-      const result = await prepareSimulator(udid, skipWda, forceRefreshWda, platform, args);
+      const result = await prepareSimulator(udid, skipWda, forceRefreshWda, platform);
 
       return textResult(JSON.stringify(result));
     },

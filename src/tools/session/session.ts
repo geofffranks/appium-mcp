@@ -62,16 +62,6 @@ const schema = z.object({
     .describe(
       'Remote Appium server URL for create or attach (e.g. http://localhost:4723). Omit to use local server for create.',
     ),
-  effortToken: z
-    .string()
-    .optional()
-    .describe('Opaque credential for the assigned managed simulator effort; never log it.'),
-  worktree: z.string().optional().describe('Canonical host worktree bound to the managed effort.'),
-  operationId: z
-    .string()
-    .optional()
-    .describe('Stable caller operation ID; reconcile uncertain responses before another start.'),
-  udid: z.string().optional().describe('Explicit existing simulator assigned to the managed effort.'),
   sessionId: z
     .string()
     .optional()
@@ -115,10 +105,6 @@ export default function session(server: FastMCP): void {
             platform: args.platform,
             capabilities: parsedCapabilities,
             remoteServerUrl: args.remoteServerUrl,
-            effortToken: args.effortToken,
-            operationId: args.operationId,
-            worktree: args.worktree,
-            udid: args.udid,
           });
         }
 
@@ -141,7 +127,7 @@ export default function session(server: FastMCP): void {
         }
 
         if (args.action === 'delete') {
-          return deleteSessionAction(args.sessionId, args);
+          return deleteSessionAction(args.sessionId);
         }
 
         if (args.action === 'list') {
