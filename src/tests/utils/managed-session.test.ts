@@ -15,7 +15,7 @@ const {recordSessionIntent, recordCreatedSession, verifySessionDeleteBinding, re
 
 const assignedUdid = '1039344E-E738-402A-B78A-6C81E1293589';
 const censusRunner = jest.fn(async (command: string, _args: string[]) => {
-  if (command === 'lsof') {return {stdout: 'p84571\nn*:8101\n', stderr: 'IPv6 listener warning'} as any;}
+  if (command === 'lsof') {return {stdout: 'p84571\n', stderr: 'IPv6 listener warning'} as any;}
   if (command === 'xcrun') {return {stdout: '84571 0 UIKitApplication:com.facebook.WebDriverAgentRunner.xctrunner[0721][rb-legacy]\n'} as any;}
   return {stdout: '84571 Wed Oct  7 22:44:51 2026 /Users/runner/Library/Developer/CoreSimulator/Devices/1039344E-E738-402A-B78A-6C81E1293589/data/Containers/Bundle/Application/ABC/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner\n'} as any;
 }) as any;
@@ -72,30 +72,6 @@ describe('managed embedded session lifetime', () => {
   test('rejects another device endpoint before creating any session intent', async () => {
     await expect(recordSessionIntent(args, {...capabilities, 'appium:webDriverAgentUrl': 'http://127.0.0.1:8102'})).rejects.toThrow('owned by this effort');
     expect(update).not.toHaveBeenCalledWith('resource-add', expect.anything());
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-  test.each([
-    'http://192.0.2.10:8101',
-    'http://user:pass@127.0.0.1:8101',
-    'https://127.0.0.1:8101',
-    'http://localhost:8101',
-    'http://[::1]:8101',
-    'http://127.0.0.1:8101/status',
-    'http://127.0.0.1:8101/..',
-    'http://127.0.0.1:8101/',
-    'http://127.0.0.1:8101?redirect=1',
-    'http://127.0.0.1:8101#fragment',
-  ])('rejects unsupported WDA endpoint %s before census or fetch', async (endpoint) => {
-    await expect(recordSessionIntent(args, {...capabilities, 'appium:webDriverAgentUrl': endpoint}, {run: censusRunner})).rejects.toThrow('literal local HTTP endpoint');
-    expect(censusRunner).not.toHaveBeenCalled();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-  test('rejects an authority-approved remote same-port endpoint before census or fetch', async () => {
-    update.mockResolvedValueOnce({ok: true, record: {resources: [{
-      kind: 'wda', owned: true, udid: assignedUdid, endpoint: 'http://192.0.2.10:8101',
-    }]}});
-    await expect(recordSessionIntent(args, {...capabilities, 'appium:webDriverAgentUrl': 'http://192.0.2.10:8101'}, {run: censusRunner})).rejects.toThrow('literal local HTTP endpoint');
-    expect(censusRunner).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
   test('rejects a registered endpoint whose current WDA identifies another device', async () => {

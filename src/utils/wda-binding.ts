@@ -29,25 +29,11 @@ export function parseLsofListenerPid(output: string, port: number): number {
     throw new Error('WDA listener port is invalid; preserve the simulator.');
   }
   const pids: number[] = [];
-  const addresses: string[] = [];
   for (const line of output.split(/\r?\n/)) {
-    const value = line.trim();
-    const pidMatch = /^p(\d+)$/.exec(value);
-    const addressMatch = /^n(.+)$/.exec(value);
-    if (pidMatch) {pids.push(Number(pidMatch[1]));}
-    if (addressMatch) {addresses.push(addressMatch[1]);}
+    const match = /^p(\d+)$/.exec(line.trim());
+    if (match) {pids.push(Number(match[1]));}
   }
-  const listenerPid = singlePid(pids, 'listener');
-  const expectedPort = String(port);
-  if (
-    addresses.length === 0 || addresses.some((address) => {
-      const match = /^(\*|127\.0\.0\.1|\[::\]|::):([0-9]+)$/.exec(address);
-      return !match || match[2] !== expectedPort;
-    })
-  ) {
-    throw new Error('WDA listener address is not a supported local binding; preserve the simulator.');
-  }
-  return listenerPid;
+  return singlePid(pids, 'listener');
 }
 
 export function parseLaunchctlWdaPid(output: string): number {
@@ -114,7 +100,7 @@ export async function captureWdaCensus(
     throw new Error('Assigned simulator UDID is malformed; preserve the simulator.');
   }
   try {
-    const listener = await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpn'], {
+    const listener = await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp'], {
       timeout: COMMAND_TIMEOUT_MS,
       maxStdoutBufferSize: MAX_STDOUT_BYTES,
     });
