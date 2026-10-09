@@ -3,8 +3,6 @@ import {realpath} from 'node:fs/promises';
 import {bindManagedSession, getSessionInfo, type ManagedSessionBinding} from '../session-store.js';
 import {callEffortAuthority} from './effort-authority.js';
 import {startSessionInventory} from './session-inventory.js';
-import {captureWdaCensus, parseWdaStatusDevice, sameWdaCensus} from './wda-binding.js';
-import type {WdaCommandRunner} from './wda-binding.js';
 
 export interface ManagedSessionArgs {
   effortToken?: string;
@@ -26,7 +24,6 @@ async function requireUpdate(
 export async function recordSessionIntent(
   args: ManagedSessionArgs,
   capabilities: Record<string, any>,
-  deps: {run?: WdaCommandRunner} = {},
 ): Promise<ManagedSessionBinding> {
   if (!args.effortToken || !args.worktree || !args.operationId || !args.udid) {
     throw new Error('Managed simulator creation requires effortToken, worktree, operationId and explicit udid.');
@@ -47,15 +44,11 @@ export async function recordSessionIntent(
   if (!ownedWda) {
     throw new Error('WDA endpoint is not a ready resource owned by this effort and assigned simulator; nothing started.');
   }
-  const port = new URL(endpoint).port ? Number(new URL(endpoint).port) : 80;
-  const before = await captureWdaCensus(args.udid, port, deps.run);
   const response = await fetch(new URL('status', endpoint), {signal: AbortSignal.timeout(3000)});
   if (!response.ok) {throw new Error('Owned WDA endpoint is not healthy; preserve ownership and reconcile.');}
-  const status: unknown = await response.json();
-  parseWdaStatusDevice(status, args.udid);
-  const after = await captureWdaCensus(args.udid, port, deps.run);
-  if (!sameWdaCensus(before, after)) {
-    throw new Error('WDA process changed during health verification; preserve ownership and reconcile.');
+  const status = await response.json() as {value?: {device?: {udid?: string}}};
+  if (status.value?.device?.udid !== args.udid) {
+    throw new Error('WDA status does not independently identify the assigned simulator; nothing started.');
   }
   if (
     capabilities['appium:fullReset'] ||
