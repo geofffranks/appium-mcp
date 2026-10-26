@@ -135,8 +135,11 @@ function redactJsonValue(value: unknown): unknown {
   return typeof value === 'string' ? redactUrlCredentials(value) : value;
 }
 
-export async function getWdaLogTail(udid: string, run: typeof exec = exec): Promise<string> {
+export async function getWdaLogTail(udid: string, run: typeof exec = exec, attemptStartedAt?: Date): Promise<string> {
   try {
+    const timeArgs = attemptStartedAt
+      ? ['--start', attemptStartedAt.toISOString().replace(/\.\d{3}Z$/, 'Z')]
+      : ['--last', '2m'];
     const {stdout} = await run(
       'xcrun',
       [
@@ -145,8 +148,7 @@ export async function getWdaLogTail(udid: string, run: typeof exec = exec): Prom
         udid,
         'log',
         'show',
-        '--last',
-        '2m',
+        ...timeArgs,
         '--style',
         'compact',
         '--predicate',

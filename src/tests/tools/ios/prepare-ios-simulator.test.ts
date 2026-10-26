@@ -80,6 +80,18 @@ describe('getWdaLogTail', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  test('scopes simulator log query to attempt start when provided', async () => {
+    const run = jest.fn(async (_command: string, _args: string[]) => ({stdout: 'dyld: Library missing XCTest'}));
+    const startedAt = new Date('2026-10-25T20:15:00.000Z');
+
+    const result = await getWdaLogTail('sim-udid', run as any, startedAt);
+
+    expect(result).toContain('Library missing XCTest');
+    expect(run.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(['--start', '2026-10-25T20:15:00Z']));
+    expect(run.mock.calls[0]?.[1]).toContain('process CONTAINS[c] "WebDriverAgent"');
+    expect(run.mock.calls[0]?.[1]).not.toContain('--last');
+  });
+
   test('returns only the bounded tail of simulator logs', async () => {
     const run = jest.fn(async () => ({stdout: Array.from({length: 50}, (_, index) => `line-${index}`).join('\n')}));
 

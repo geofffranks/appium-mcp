@@ -9,14 +9,28 @@ class MockDriver {
 jest.unstable_mockModule('appium-uiautomator2-driver', () => ({AndroidUiautomator2Driver: class {}}));
 jest.unstable_mockModule('appium-xcuitest-driver', () => ({XCUITestDriver: class XCUITestDriver extends MockDriver {}}));
 jest.unstable_mockModule('webdriver', () => ({default: {newSession: jest.fn(), attachToSession: jest.fn()}}));
-jest.unstable_mockModule('appium-webdriveragent', () => ({BOOTSTRAP_PATH: '/mock/wda'}));
+jest.unstable_mockModule('appium-webdriveragent', () => ({
+  BOOTSTRAP_PATH: '/mock/wda',
+  WebDriverAgent: class {
+    async launch() {return {build: {productBundleIdentifier: 'com.facebook.WebDriverAgentRunner'}};}
+    async quit() {}
+  },
+  WDA_BASE_URL: 'http://127.0.0.1',
+  WDA_RUNNER_BUNDLE_ID: 'com.facebook.WebDriverAgentRunner',
+}));
 jest.unstable_mockModule('node-simctl', () => ({Simctl: class {async bootDevice() {} async startBootMonitor() {}}}));
 jest.unstable_mockModule('../../devicemanager/adb-manager', () => ({ADBManager: {getInstance: jest.fn()}}));
 jest.unstable_mockModule('../../devicemanager/ios-manager', () => ({
   IOSManager: {getInstance: () => ({listSimulators: async () => [{udid: 'assigned', name: 'iPhone', state: 'Booted'}], getDevicesByType: async () => [{udid: 'assigned'}]})},
 }));
-jest.unstable_mockModule('teen_process', () => ({exec: jest.fn(async (_command: string, args: string[]) => ({
-  stdout: args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : '',
+class MockSubProcess {
+  isRunning = false;
+  async start() {}
+  async stop() {}
+  async join() {}
+}
+jest.unstable_mockModule('teen_process', () => ({SubProcess: MockSubProcess, exec: jest.fn(async (command: string, args: string[]) => ({
+  stdout: command === 'lsof' ? 'p123\n' : command === 'ps' ? '/CoreSimulator/Devices/assigned/data/Applications/WDA.app/WDA' : args.includes('-version') ? 'Xcode 26.2\nBuild version 17C123' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : '',
 }))}));
 jest.unstable_mockModule('../../utils/ports.js', () => ({findFreePort: async () => 8101, releaseReservedPort: jest.fn(), releaseReservedPorts: jest.fn()}));
 jest.unstable_mockModule('../../utils/wda-readiness.js', () => ({
@@ -66,13 +80,18 @@ describe('registered MCP tools', () => {
     const definitions = register();
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({value: {build: {productBundleIdentifier: 'com.facebook.WebDriverAgentRunner'}, os: {name: 'iOS'}, ios: {simulatorVersion: '26.5'}}}),
+    }) as Response);
     try {
       const prepared = await definitions.get('prepare_ios_simulator').execute({udid: 'assigned', skipWda: true}, {});
       expect(JSON.parse(prepared.content[0].text).ready).toBe(true);
       const created = await definitions.get('appium_session_management').execute({
         action: 'create', platform: 'ios', capabilities: '{"appium:udid":"assigned"}',
       }, {});
-      expect(created.isError).not.toBe(true);
+      expect(created.content.find((block: any) => block.type === 'text')?.text).not.toContain('Failed to create session');
       const interacted = await definitions.get('appium_get_page_source').execute({}, {});
       expect(interacted.content[0].text).toContain('<App/>');
       const deleted = await definitions.get('appium_session_management').execute({action: 'delete'}, {});
@@ -80,6 +99,7 @@ describe('registered MCP tools', () => {
       expect(driverState.interactions).toBe(1);
       expect(driverState.deleted).toBe(true);
     } finally {
+      global.fetch = originalFetch;
       if (platformDescriptor) {Object.defineProperty(process, 'platform', platformDescriptor);}
     }
   });

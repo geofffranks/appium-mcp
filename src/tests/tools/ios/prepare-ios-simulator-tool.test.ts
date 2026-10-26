@@ -1,68 +1,97 @@
 import {describe, expect, jest, test} from '@jest/globals';
 
-import {sanitizeDiagnostic as realSanitizeDiagnostic} from '../../../utils/wda-readiness.js';
-
-const mockWaitForWdaReady = jest.fn(async () => ({ready: false, elapsedMs: 30_000, lastProbe: 'Request error: Error: token=[REDACTED]'}));
-const mockGetWdaLogTail = jest.fn(async () => 'WDA log authorization=[REDACTED]');
-const mockExec = jest.fn(async (command: string, args: string[], _options?: {timeout?: number}) => ({
-  stdout: command === 'plutil' ? '{}' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : '',
-}));
 const mockAddTool = jest.fn();
-const mockIOSManager = {getInstance: () => ({listSimulators: async () => [{udid: 'test-udid', name: 'iPhone', state: 'Booted'}]})};
-jest.unstable_mockModule('../../../devicemanager/ios-manager.js', () => ({IOSManager: mockIOSManager}));
-jest.unstable_mockModule('node-simctl', () => ({Simctl: class {}}));
-jest.unstable_mockModule('teen_process', () => ({exec: mockExec}));
-jest.unstable_mockModule('../../../utils/ports.js', () => ({findFreePort: async () => 8101, releaseReservedPort: jest.fn()}));
-jest.unstable_mockModule('../../../utils/wda-readiness.js', () => ({getWdaLogTail: mockGetWdaLogTail, sanitizeDiagnostic: realSanitizeDiagnostic, waitForWdaReady: mockWaitForWdaReady}));
-jest.unstable_mockModule('../../../logger.js', () => ({default: {info: jest.fn(), error: jest.fn()}}));
-jest.unstable_mockModule('@appium/support', () => ({
-  fs: {hasAccess: async () => true, readdir: async () => [], mkdirp: async () => {}, unlink: async () => {}},
-  net: {}, plist: {parsePlistFile: async () => ({CFBundleIdentifier: 'com.example.wda'})}, zip: {},
+const mockExec = jest.fn(async (command: string, args: string[] = []) => ({stdout: command === 'xcodebuild' ? 'Xcode 26.2\nBuild version 17C123' : args.some((arg) => arg.includes('CFBundleIdentifier')) ? 'com.facebook.WebDriverAgentRunner' : 'WebDriverAgentRunner-Runner'}));
+const mockManagedStart = jest.fn(async (options: any) => ({
+  status: 'ready',
+  record: {identity: {udid: options.udid}, state: 'ready', owned: true, endpoint: {url: 'http://127.0.0.1:8123', port: 8123}},
 }));
-jest.unstable_mockModule('../../../utils/paths.js', () => ({resolveAppiumMcpCachePath: () => '/cache/wda'}));
+const mockBootDevice = jest.fn(async () => {});
+const mockStartBootMonitor = jest.fn(async () => {});
+const mockIOSManager = {
+  getInstance: () => ({listSimulators: async () => [{udid: 'test-udid', name: 'iPhone', state: 'Booted', platform: '26.5'}]}),
+};
+jest.unstable_mockModule('../../../devicemanager/ios-manager.js', () => ({IOSManager: mockIOSManager}));
+jest.unstable_mockModule('node-simctl', () => ({Simctl: class {udid = ''; bootDevice = mockBootDevice; startBootMonitor = mockStartBootMonitor;}}));
+jest.unstable_mockModule('teen_process', () => ({exec: mockExec}));
+jest.unstable_mockModule('../../../utils/managed-simulator-wda.js', () => ({startManagedSimulatorWda: mockManagedStart}));
+jest.unstable_mockModule('../../../utils/simulator-wda-identity.js', () => ({createSimulatorWdaArtifactIdentity: async () => ({artifact: 'test-artifact', toolchain: 'test-toolchain'})}));
+jest.unstable_mockModule('../../../utils/simulator-wda-app.js', () => ({validateSimulatorWdaApp: async (appPath: string) => ({path: appPath, bundleId: 'com.facebook.WebDriverAgentRunner'})}));
+jest.unstable_mockModule('../../../utils/wda-readiness.js', () => ({sanitizeDiagnostic: (text: string) => text}));
+jest.unstable_mockModule('../../../logger.js', () => ({default: {info: jest.fn()}}));
 jest.unstable_mockModule('../../../tools/tool-response.js', () => ({textResult: (text: string) => ({content: [{type: 'text', text}]})}));
 const {default: registerPrepareIosSimulator} = await import('../../../tools/ios/prepare-ios-simulator.js');
 
-describe('prepare_ios_simulator tool', () => {
-  test('runs simulator preparation with only a UDID and reports malformed inventory', async () => {
-    mockAddTool.mockReset();
-    mockExec.mockImplementation(async (command: string, args: string[]) => ({stdout: command === 'plutil' ? '{malformed' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : ''}));
-    registerPrepareIosSimulator({addTool: mockAddTool} as any);
-    const definition = mockAddTool.mock.calls[0][0] as {execute: (args: any) => Promise<any>};
-    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
-    let result: any;
-    try {result = await definition.execute({udid: 'test-udid', platform: 'ios'});} finally {
-      if (platformDescriptor) {Object.defineProperty(process, 'platform', platformDescriptor);}
+async function toolExecute() {
+  mockAddTool.mockReset();
+  registerPrepareIosSimulator({addTool: mockAddTool} as any);
+  return (mockAddTool.mock.calls[0][0] as {execute: (args: any) => Promise<any>}).execute;
+}
+
+async function withDarwin<T>(action: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
+  try {
+    return await action();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(process, 'platform', descriptor);
     }
+  }
+}
+
+describe('prepare_ios_simulator tool', () => {
+  test('returns managed WDA endpoint and attach capabilities for the selected UDID', async () => {
+    mockManagedStart.mockClear();
+    const execute = await toolExecute();
+    const result = await withDarwin(() => execute({udid: 'test-udid', platform: 'ios'}));
     const parsed = JSON.parse(result.content[0].text as string);
-    expect(parsed.wda_install.status).toBe('failed');
-    expect(parsed.wda_install.detail).toContain('installation state could not be verified');
-    expect(mockExec).not.toHaveBeenCalledWith('xcrun', expect.arrayContaining(['install', 'test-udid']));
+    expect(parsed.ready).toBe(true);
+    expect(parsed.webDriverAgentUrl).toBe('http://127.0.0.1:8123');
+    expect(parsed.capabilitiesHint['appium:webDriverAgentUrl']).toBe('http://127.0.0.1:8123');
+    expect(parsed.capabilitiesHint['appium:noReset']).toBe(true);
+    expect(mockManagedStart).toHaveBeenCalledWith(expect.objectContaining({udid: 'test-udid', platform: 'ios', runtime: '26.5'}));
   });
 
-  test('returns readiness diagnostics and a sanitized bounded WDA log tail without credentials', async () => {
-    mockAddTool.mockReset();
-    mockExec.mockReset().mockImplementation(async (command: string, args: string[]) => ({stdout: command === 'plutil' ? '{}' : args.includes('listapps') ? '<?xml version="1.0"?><plist><dict/></plist>' : ''}));
-    registerPrepareIosSimulator({addTool: mockAddTool} as any);
-    const definition = mockAddTool.mock.calls[0][0] as {execute: (args: any) => Promise<any>};
-    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    Object.defineProperty(process, 'platform', {configurable: true, value: 'darwin'});
-    let result: any;
-    try {result = await definition.execute({udid: 'test-udid', platform: 'ios'});} finally {
-      if (platformDescriptor) {Object.defineProperty(process, 'platform', platformDescriptor);}
-    }
+  test('skipWda only boots and never invokes managed startup', async () => {
+    mockManagedStart.mockClear();
+    const execute = await toolExecute();
+    const result = await withDarwin(() => execute({udid: 'test-udid', skipWda: true}));
     const parsed = JSON.parse(result.content[0].text as string);
-    expect(parsed.ready).toBe(false);
-    expect(parsed.wda_install.status).toBe('failed');
-    expect(mockExec).toHaveBeenCalledWith('xcrun', ['simctl', 'listapps', 'test-udid']);
-    expect(mockExec).toHaveBeenCalledWith('plutil', ['-convert', 'json', '-o', '-', '--', expect.stringMatching(/listapps\.plist$/)], {timeout: 5000});
-    expect(parsed.udid).toBe('test-udid');
-    expect(parsed.wda_install.detail).toContain('phase=readiness');
-    expect(parsed.wda_install.detail).toContain('elapsedMs=30000');
-    expect(parsed.wda_install.detail).toContain('lastProbe=Request error');
-    expect(parsed.wda_install.detail).not.toContain('probe-secret');
-    expect(parsed.wda_install.detail).not.toContain('log-secret');
-    expect(parsed.wda_install.detail).toContain('authorization=[REDACTED]');
+    expect(parsed.ready).toBe(true);
+    expect(parsed.wda_install.detail).toBe('skipWda=true');
+    expect(mockManagedStart).not.toHaveBeenCalled();
+  });
+
+  test('force refresh does not activate deliberate permanent-failure retry', async () => {
+    mockManagedStart.mockClear();
+    const execute = await toolExecute();
+    await withDarwin(() => execute({udid: 'test-udid', forceRefreshWda: true}));
+    expect(mockManagedStart).toHaveBeenCalledWith(expect.objectContaining({retryPermanentFailure: false}));
+  });
+
+  test('retryWda is passed only when explicitly requested', async () => {
+    mockManagedStart.mockClear();
+    const execute = await toolExecute();
+    await withDarwin(() => execute({udid: 'test-udid', retryWda: true}));
+    expect(mockManagedStart).toHaveBeenCalledWith(expect.objectContaining({retryPermanentFailure: true}));
+  });
+
+  test('passes a supplied .app override to the Xcode-managed XCTest startup', async () => {
+    const oldPath = process.env.APPIUM_MCP_WDA_APP_PATH;
+    process.env.APPIUM_MCP_WDA_APP_PATH = '/tmp/runner.app';
+    mockManagedStart.mockClear();
+    const execute = await toolExecute();
+    try {
+      const result = await withDarwin(() => execute({udid: 'test-udid'}));
+      expect(result.content[0].text).toContain('"ready":true');
+      expect(mockManagedStart).toHaveBeenCalledWith(expect.objectContaining({suppliedApp: {path: '/tmp/runner.app', bundleId: expect.any(String)}}));
+    } finally {
+      if (oldPath === undefined) {
+        delete process.env.APPIUM_MCP_WDA_APP_PATH;
+      } else {
+        process.env.APPIUM_MCP_WDA_APP_PATH = oldPath;
+      }
+    }
   });
 });

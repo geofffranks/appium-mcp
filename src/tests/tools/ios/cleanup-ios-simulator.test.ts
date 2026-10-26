@@ -1,12 +1,9 @@
-import {beforeEach, expect, jest, test} from '@jest/globals';
-const execute = jest.fn<(...args: any[]) => Promise<any>>();
-jest.unstable_mockModule('teen_process', () => ({exec: execute}));
-const {cleanupOwnedWda} = await import('../../../tools/ios/cleanup-ios-simulator.js');
-beforeEach(() => { execute.mockReset().mockResolvedValue({stdout: ''}); });
-test('stops WDA on the requested simulator without admission credentials', async () => {
-  const result = await cleanupOwnedWda({udid: 'assigned'});
+import {expect, test} from '@jest/globals';
+
+import {cleanupOwnedWda} from '../../../tools/ios/cleanup-ios-simulator.js';
+
+test('does not signal a runner when this server has no owned lifecycle handle', async () => {
+  const result = await cleanupOwnedWda({udid: 'unowned-simulator'});
   expect(result.isError).not.toBe(true);
-  expect(execute).toHaveBeenCalledWith('xcrun', ['simctl', 'terminate', 'assigned', 'com.facebook.WebDriverAgentRunner.xctrunner'], {
-    timeout: 5000,
-  });
+  expect(JSON.stringify(result)).toContain('no process was signaled');
 });

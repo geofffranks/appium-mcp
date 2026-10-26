@@ -59,7 +59,8 @@ export const net = {
 };
 
 export const plist = {
-  parsePlistFile: async () => ({}),
+  parsePlistFile: async (_filePath?: string) => ({}),
+  createPlist: (value: unknown) => JSON.stringify(value),
 };
 
 export const zip = {

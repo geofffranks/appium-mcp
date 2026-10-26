@@ -4,6 +4,7 @@ import type {Client} from 'webdriver';
 
 import log from './logger.js';
 import {removePersistedSession, writePersistedSession} from './persistence.js';
+import {releaseSimulatorWdaSession} from './utils/simulator-wda-lifecycle.js';
 
 export type DriverInstance = Client | AndroidUiautomator2Driver | XCUITestDriver;
 export type NullableDriverInstance = DriverInstance | null;
@@ -107,6 +108,7 @@ export async function safeDeleteSession(sessionId?: string): Promise<boolean> {
     log.info(`Deleting session ${id}`);
     await session.driver.deleteSession();
     sessions.delete(id);
+    releaseSimulatorWdaSession(id);
     activeSessionId = selectNextActiveSessionId(id);
     void removePersistedSession(id);
     log.info(`Session ${id} deleted successfully.`);

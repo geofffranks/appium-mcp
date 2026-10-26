@@ -13,6 +13,11 @@ const mockAttachToSession = jest.fn<(options: Record<string, unknown>) => Promis
 
 let mockSelectedDevicePlatform: 'android' | 'ios' | null = 'ios';
 let mockSelectedDevice: string | null = 'device-udid';
+const mockManagedWdaStart = jest.fn(async (_options: Record<string, unknown>) => ({
+  status: 'ready',
+  record: {endpoint: {url: 'http://127.0.0.1:8123', port: 8123}},
+}));
+const mockAttachSimulatorWdaSession = jest.fn((_udid: string, _platform: string, _sessionId: string) => true);
 
 jest.unstable_mockModule('../../../tools/session/select-device', () => ({
   getSelectedLocalDevice: () =>
@@ -39,9 +44,21 @@ jest.unstable_mockModule('../../../devicemanager/ios-manager', () => ({
   IOSManager: {
     getInstance: () => ({
       getDevicesByType: async (_t: any) => [{udid: 'u1'}],
+      listSimulators: async () => [{udid: 'device-udid', platform: '16.0'}],
     }),
   },
 }));
+
+jest.unstable_mockModule('../../../utils/managed-simulator-wda.js', () => ({startManagedSimulatorWda: mockManagedWdaStart}));
+jest.unstable_mockModule('../../../utils/simulator-wda-identity.js', () => ({createSimulatorWdaArtifactIdentity: async () => ({artifact: 'test-artifact', toolchain: 'test-toolchain'})}));
+jest.unstable_mockModule('../../../utils/simulator-wda-lifecycle.js', () => ({
+  leaseSimulatorWdaEndpoint: jest.fn(() => null),
+  attachSimulatorWdaSession: mockAttachSimulatorWdaSession,
+  releaseSimulatorWdaSession: jest.fn(),
+  transferSimulatorWdaSessionLease: jest.fn(() => true),
+}));
+jest.unstable_mockModule('../../../utils/simulator-wda-app.js', () => ({validateSimulatorWdaApp: async (appPath: string) => ({path: appPath, bundleId: 'com.facebook.WebDriverAgentRunner'})}));
+jest.unstable_mockModule('teen_process', () => ({exec: async () => ({stdout: 'Xcode 26.2\nBuild version 17C123'})}));
 
 jest.unstable_mockModule('../../../logger', () => ({
   default: {debug: () => {}, info: () => {}, warn: () => {}, error: () => {}},
@@ -51,7 +68,11 @@ jest.unstable_mockModule('appium-uiautomator2-driver', () => ({
   AndroidUiautomator2Driver: class {},
 }));
 jest.unstable_mockModule('appium-xcuitest-driver', () => ({
-  XCUITestDriver: class {},
+  XCUITestDriver: class {
+    async createSession() {
+      return ['local-ios-session', {}];
+    }
+  },
 }));
 jest.unstable_mockModule('webdriver', () => ({
   default: {
@@ -132,6 +153,7 @@ let mockFetch: jest.MockedFunction<typeof fetch>;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAttachSimulatorWdaSession.mockReturnValue(true);
   mockSelectedDevicePlatform = 'ios';
   mockSelectedDevice = 'device-udid';
   mockGetSessionOwnership.mockReturnValue(null);
@@ -549,6 +571,59 @@ describe('appium_session_management tool', () => {
       expect(result.content[0].text).toBe('platform is required for create action');
     });
 
+    test.each([
+      {'appium:noReset': false},
+      {'appium:useNewWDA': true},
+    ])('rejects incompatible managed WDA capabilities before startup: %o', async (capabilities) => {
+      mockSelectedDevicePlatform = 'ios';
+      mockSelectedDevice = 'device-udid';
+      mockManagedWdaStart.mockClear();
+      const result = await createSessionAction({platform: 'ios', capabilities});
+      expect(result.isError).toBe(true);
+      expect(result.content[0].type === 'text' ? result.content[0].text : '').toContain('requires appium:noReset=true');
+      expect(mockManagedWdaStart).not.toHaveBeenCalled();
+      expect(mockSetSession).not.toHaveBeenCalled();
+    });
+
+    test('local iOS simulator reuses managed WDA and disables duplicate startup', async () => {
+      mockSelectedDevicePlatform = 'ios';
+      mockAttachSimulatorWdaSession.mockReturnValue(true);
+      mockSelectedDevice = 'device-udid';
+      mockManagedWdaStart.mockClear();
+      mockListSessions.mockReturnValue([]);
+      const result = await createSessionAction({platform: 'ios'});
+      const responseText = result.content.find((block) => block.type === 'text');
+      expect(responseText?.type === 'text' ? responseText.text : '').not.toContain('Failed to create session');
+      expect(mockManagedWdaStart.mock.calls[0]?.[0]).toEqual(expect.objectContaining({udid: 'device-udid', platform: 'ios'}));
+      expect(mockNewSession).not.toHaveBeenCalled();
+      expect(mockSetSession).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({
+          'appium:webDriverAgentUrl': 'http://127.0.0.1:8123',
+          'appium:noReset': true,
+        }),
+        'owned',
+      );
+      expect(mockAttachSimulatorWdaSession).toHaveBeenCalledWith('device-udid', 'ios', expect.any(String));
+    });
+
+    test('rejects managed WDA when its session lease cannot be acquired', async () => {
+      mockSelectedDevicePlatform = 'ios';
+      mockSelectedDevice = 'device-udid';
+      mockManagedWdaStart.mockClear();
+      mockAttachSimulatorWdaSession.mockReturnValue(false);
+
+      const result = await createSessionAction({platform: 'ios'});
+
+      expect(result.isError).toBe(true);
+      expect(result.content.find((block) => block.type === 'text')).toEqual(
+        expect.objectContaining({text: expect.stringContaining('stopped before the session creation lease was acquired')}),
+      );
+      expect(mockNewSession).not.toHaveBeenCalled();
+      expect(mockSetSession).not.toHaveBeenCalled();
+    });
+
     test('returns error when capabilities JSON is invalid', async () => {
       const tool = await getToolExecute();
 
@@ -675,8 +750,8 @@ describe('buildIOSCapabilities', () => {
     expect(caps.platformName).toBe('iOS');
     expect(caps['appium:deviceName']).toBe('iPhone 12');
     expect(caps['appium:platformVersion']).toBe('16.0');
-    expect(caps['appium:usePrebuiltWDA']).toBe(true);
-    expect(caps['appium:wdaStartupRetries']).toBe(4);
+    expect(caps['appium:usePrebuiltWDA']).toBe(false);
+    expect(caps['appium:wdaStartupRetries']).toBe(1);
     expect(caps['custom:cap']).toBe('value');
     expect(caps['appium:bundleId']).toBe('com.example.app');
   });

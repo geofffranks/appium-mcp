@@ -8,10 +8,14 @@ import WebDriver from 'webdriver';
 
 import {IOSManager} from '../../devicemanager/ios-manager.js';
 import log from '../../logger.js';
-import {setSession, listSessions} from '../../session-store.js';
+import {setSession, listSessions, safeDeleteSession} from '../../session-store.js';
 import {createUIResource, createSessionDashboardUI, addUIResourceToResponse} from '../../ui/mcp-ui-utils.js';
 import {readBooleanEnv} from '../../utils/env.js';
 import {findFreePort, releaseReservedPorts} from '../../utils/ports.js';
+import {startManagedSimulatorWda} from '../../utils/managed-simulator-wda.js';
+import {attachSimulatorWdaSession, leaseSimulatorWdaEndpoint, releaseSimulatorWdaSession, transferSimulatorWdaSessionLease} from '../../utils/simulator-wda-lifecycle.js';
+import {createSimulatorWdaArtifactIdentity} from '../../utils/simulator-wda-identity.js';
+import {validateSimulatorWdaApp} from '../../utils/simulator-wda-app.js';
 import {validateEmbeddedAppCapabilities} from '../../utils/remote-app-policy.js';
 import {redactForLogging, redactUrlCredentials} from '../../utils/sensitive.js';
 import {getPortFromUrl, validateRemoteServerUrl} from '../../utils/url.js';
@@ -218,11 +222,7 @@ export async function buildIOSCapabilities(
 
   const additionalCaps: Record<string, any> =
     deviceType === 'simulator'
-      ? {
-          'appium:usePrebuiltWDA': true,
-          'appium:wdaStartupRetries': 4,
-          'appium:wdaStartupRetryInterval': 20000,
-        }
+      ? {'appium:usePrebuiltWDA': false, 'appium:wdaStartupRetries': 1}
       : {};
   additionalCaps['appium:newCommandTimeout'] = 300;
   additionalCaps['appium:settings[animationCoolOffTimeout]'] = 0.5;
@@ -303,6 +303,8 @@ export async function createSessionAction(
   },
 ): Promise<ContentResult> {
   let finalCapabilities: Capabilities | undefined;
+  let managedWdaLease: {udid: string; platform: 'ios' | 'tvos'; leaseId: string} | undefined;
+  let sessionIdForLease: string | undefined;
 
   try {
     const {platform, capabilities: customCapabilities, remoteServerUrl} = args;
@@ -364,6 +366,62 @@ export async function createSessionAction(
         return errorResult('platform=general requires remoteServerUrl.');
       }
       validateEmbeddedAppCapabilities(finalCapabilities);
+      const suppliedWdaUrl = finalCapabilities['appium:webDriverAgentUrl'];
+      if (typeof suppliedWdaUrl === 'string') {
+        const leaseId = `creating:${Date.now()}:${Math.random()}`;
+        const ownedEndpoint = leaseSimulatorWdaEndpoint(suppliedWdaUrl, leaseId);
+        if (ownedEndpoint === null) {
+          return errorResult('The managed WebDriverAgent endpoint is stopping; retry session creation after cleanup completes.');
+        }
+        if (ownedEndpoint) {
+          managedWdaLease = {...ownedEndpoint, leaseId};
+        }
+      }
+      if (platform === 'ios' && !finalCapabilities['appium:webDriverAgentUrl']) {
+        const selected = getSelectedLocalDevice();
+        const simulatorUdid = finalCapabilities['appium:udid'] || (selected?.platform === 'ios' && selected.type === 'simulator' ? selected.udid : undefined);
+        if (simulatorUdid) {
+          const manager = IOSManager.getInstance();
+          const simulator = (await manager.listSimulators()).find((item) => item.udid === simulatorUdid);
+          if (simulator) {
+            if (finalCapabilities['appium:noReset'] === false || finalCapabilities['appium:useNewWDA'] === true) {
+              return errorResult('Managed simulator WDA requires appium:noReset=true and appium:useNewWDA=false; remove the incompatible explicit capability or attach to an existing WDA.');
+            }
+            const wdaPlatform = /^tv/i.test(finalCapabilities.platformName) ? 'tvos' : 'ios';
+            const runtime = finalCapabilities['appium:platformVersion'] || simulator.platform || 'unknown';
+            const override = process.env.APPIUM_MCP_WDA_APP_PATH?.trim();
+            const suppliedApp = override ? await validateSimulatorWdaApp(override) : undefined;
+            const artifactIdentity = await createSimulatorWdaArtifactIdentity({platform: wdaPlatform, runtime, suppliedApp});
+            const wda = await startManagedSimulatorWda({
+              udid: simulatorUdid,
+              platform: wdaPlatform,
+              runtime,
+              ...artifactIdentity,
+              suppliedApp,
+            });
+            if (wda.status === 'failed') {
+              throw new Error(
+                `Managed WebDriverAgent startup failed (${wda.failure.kind}, ${wda.failure.permanence}, suppressed=${wda.suppressed}). ${wda.failure.message}`,
+              );
+            }
+            const endpoint = wda.record.endpoint;
+            if (!endpoint) {
+              throw new Error('Managed WebDriverAgent reported ready without an endpoint.');
+            }
+            managedWdaLease = {udid: simulatorUdid, platform: wdaPlatform, leaseId: `creating:${Date.now()}:${Math.random()}`};
+            if (!attachSimulatorWdaSession(simulatorUdid, wdaPlatform, managedWdaLease.leaseId)) {
+              managedWdaLease = undefined;
+              throw new Error('Managed WebDriverAgent stopped before the session creation lease was acquired.');
+            }
+            finalCapabilities = {
+              ...finalCapabilities,
+              'appium:webDriverAgentUrl': endpoint.url,
+              'appium:noReset': finalCapabilities['appium:noReset'] ?? true,
+              'appium:useNewWDA': finalCapabilities['appium:useNewWDA'] ?? false,
+            };
+          }
+        }
+      }
       const allocation = await assignEmbeddedDriverPorts(platform, finalCapabilities);
       finalCapabilities = allocation.capabilities;
       const driver = createDriverForPlatform(platform);
@@ -377,6 +435,13 @@ export async function createSessionAction(
         releaseReservedPorts(allocation.allocatedPorts);
       }
       await setSession(driver, sessionId, finalCapabilities, 'owned');
+      if (managedWdaLease) {
+        if (!transferSimulatorWdaSessionLease(managedWdaLease.leaseId, sessionId)) {
+          await safeDeleteSession(sessionId).catch(() => false);
+          throw new Error('Managed WebDriverAgent session lease was lost before the created session could be registered.');
+        }
+        sessionIdForLease = sessionId;
+      }
     }
 
     const sessionIdStr = typeof sessionId === 'string' ? sessionId : String(sessionId || 'Unknown');
@@ -404,6 +469,8 @@ export async function createSessionAction(
       ),
     );
   } catch (error: unknown) {
+    if (typeof sessionIdForLease === 'string') {releaseSimulatorWdaSession(sessionIdForLease);}
+    if (managedWdaLease) {releaseSimulatorWdaSession(managedWdaLease.leaseId);}
     log.error('Error creating session:', toolErrorMessage(error));
     return errorResult(
       buildCreateSessionFailureMessage(error, {
